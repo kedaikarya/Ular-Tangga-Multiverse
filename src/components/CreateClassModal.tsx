@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { GRADE_OPTIONS, SUBJECT_OPTIONS } from '../constants';
 
 interface CreateClassModalProps {
   isOpen: boolean;
@@ -16,8 +17,8 @@ interface CreateClassModalProps {
 export default function CreateClassModal({ isOpen, onClose, onCreateClass }: CreateClassModalProps) {
   const [className, setClassName] = useState('Kelas Fase C - Cerdas Cermat');
   const [grade, setGrade] = useState('Fase C');
-  const [subject, setSubject] = useState('Matematika');
-  const [topic, setTopic] = useState('Operasi Hitung & Pecahan');
+  const [subject, setSubject] = useState('IPAS');
+  const [topic, setTopic] = useState('Rantai Makanan');
   const [themeMode, setThemeMode] = useState<'classic' | 'modern'>('classic');
   const [autoAi, setAutoAi] = useState(true);
 
@@ -63,22 +64,17 @@ export default function CreateClassModal({ isOpen, onClose, onCreateClass }: Cre
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Fase Pembelajaran</label>
               <select value={grade} onChange={(e) => setGrade(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-950 border border-slate-700 text-xs font-bold text-white">
-                <option value="Fase A">Fase A (Kelas 1–2 SD)</option>
-                <option value="Fase B">Fase B (Kelas 3–4 SD)</option>
-                <option value="Fase C">Fase C (Kelas 5–6 SD)</option>
-                <option value="Fase D">Fase D (Kelas 7–9 SMP)</option>
+                {GRADE_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1">Mata Pelajaran</label>
               <select value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-950 border border-slate-700 text-xs font-bold text-white">
-                <option value="Matematika">Matematika</option>
-                <option value="Bahasa Indonesia">Bahasa Indonesia</option>
-                <option value="IPA">IPA (Sains)</option>
-                <option value="IPS">IPS</option>
-                <option value="PPKn">PPKn</option>
-                <option value="Bahasa Inggris">Bahasa Inggris</option>
-                <option value="Campuran">Campuran Semua Mapel</option>
+                {SUBJECT_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -91,9 +87,10 @@ export default function CreateClassModal({ isOpen, onClose, onCreateClass }: Cre
               required
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="Contoh: Pecahan, Ekosistem, Tata Surya..."
+              placeholder="Contoh: Rantai Makanan, Pecahan, Ekosistem, Tata Surya..."
               className="w-full px-4 py-2.5 rounded-2xl bg-slate-950 border border-slate-700 focus:border-amber-400 outline-none text-sm font-bold text-white"
             />
+            <p className="text-[11px] text-slate-400 mt-1">Soal Gemini AI & bank soal otomatis disesuaikan tepat dengan Fase, Mapel, dan Materi.</p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -18,7 +18,13 @@ export default function LiveBoard2DModal({
   if (!isOpen || !room) return null;
 
   const players = Object.values(room.players || {}).filter(p => p.role !== 'teacher');
-  const sortedStudents = [...players].sort((a, b) => (b.position - a.position) || (b.score - a.score));
+  const sortedStudents = [...players].sort((a, b) => {
+    const aFin = (a.finishOrder && a.finishOrder > 0) ? a.finishOrder : Number.MAX_SAFE_INTEGER;
+    const bFin = (b.finishOrder && b.finishOrder > 0) ? b.finishOrder : Number.MAX_SAFE_INTEGER;
+    if (aFin !== bFin) return aFin - bFin;
+    if ((b.position || 1) !== (a.position || 1)) return (b.position || 1) - (a.position || 1);
+    return (b.score || 0) - (a.score || 0);
+  });
 
   // Build 10 rows from top (row 9: 100..91) down to bottom (row 0: 1..10)
   const rows: number[][] = [];
@@ -144,12 +150,14 @@ export default function LiveBoard2DModal({
                       className={`px-2.5 py-2 rounded-xl border flex items-center justify-between text-xs ${p.id === currentUserId ? 'bg-indigo-500/20 border-indigo-400/60' : 'bg-slate-900/90 border-slate-800'}`}
                     >
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className="font-extrabold text-slate-400 w-4">{idx + 1}.</span>
+                        <span className="font-extrabold text-slate-400 w-5 shrink-0">{p.position >= 100 ? '🏆' : `${idx + 1}.`}</span>
                         <span className="text-base">{p.avatar}</span>
-                        <span className="font-bold text-white truncate">{p.name}</span>
+                        <span className="font-bold text-white truncate">
+                          {p.name}{p.position >= 100 && p.finishOrder ? ` (#${p.finishOrder})` : ''}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 font-extrabold text-[11px]">
+                        <span className={`px-2 py-0.5 rounded-lg font-extrabold text-[11px] ${p.position >= 100 ? 'bg-emerald-500/25 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
                           Petak {p.position || 1}
                         </span>
                         <span className="text-[11px] font-bold text-emerald-300">{p.score || 0}p</span>

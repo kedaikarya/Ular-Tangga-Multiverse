@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { RoomData } from '../types';
+import { GRADE_OPTIONS, SUBJECT_OPTIONS } from '../constants';
 
 interface HudDrawerProps {
   isOpen: boolean;
@@ -9,7 +10,8 @@ interface HudDrawerProps {
   room: RoomData | null;
   currentUserRole: 'teacher' | 'student';
   onSendChatMessage: (text: string) => void;
-  onUpdateTeacherSettings: (grade: string, subject: string, topic: string) => void;
+  onUpdateTeacherSettings: (grade: string, subject: string, topic: string, regenerateQuestions: boolean) => void;
+  isGeneratingAi?: boolean;
   onOpenAiStudio: () => void;
   onOpenSnakeCustomizer: () => void;
   onOpenBoardTheme: () => void;
@@ -26,6 +28,7 @@ export default function HudDrawer({
   currentUserRole,
   onSendChatMessage,
   onUpdateTeacherSettings,
+  isGeneratingAi = false,
   onOpenAiStudio,
   onOpenSnakeCustomizer,
   onOpenBoardTheme,
@@ -34,8 +37,16 @@ export default function HudDrawer({
 }: HudDrawerProps) {
   const [chatInput, setChatInput] = useState('');
   const [gradeVal, setGradeVal] = useState(room?.grade || 'Fase C');
-  const [subjectVal, setSubjectVal] = useState(room?.subject || 'Matematika');
+  const [subjectVal, setSubjectVal] = useState(room?.subject || 'IPAS');
   const [topicVal, setTopicVal] = useState(room?.topic || '');
+  const [regenAiOnSave, setRegenAiOnSave] = useState(true);
+
+  useEffect(() => {
+    if (!isOpen || !room) return;
+    setGradeVal(room.grade || 'Fase C');
+    setSubjectVal(room.subject || 'IPAS');
+    setTopicVal(room.topic || '');
+  }, [isOpen, room?.code, room?.grade, room?.subject, room?.topic]);
 
   if (!isOpen) return null;
 
@@ -48,17 +59,23 @@ export default function HudDrawer({
 
   const handleTeacherSettingsSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateTeacherSettings(gradeVal, subjectVal, topicVal);
+    onUpdateTeacherSettings(gradeVal, subjectVal, topicVal, regenAiOnSave);
   };
 
   const players = room ? Object.values(room.players || {}).filter(p => p.role !== 'teacher') : [];
-  const sortedClassRank = [...players].sort((a, b) => (b.position - a.position) || (b.score - a.score));
+  const sortedClassRank = [...players].sort((a, b) => {
+    const aFin = (a.finishOrder && a.finishOrder > 0) ? a.finishOrder : Number.MAX_SAFE_INTEGER;
+    const bFin = (b.finishOrder && b.finishOrder > 0) ? b.finishOrder : Number.MAX_SAFE_INTEGER;
+    if (aFin !== bFin) return aFin - bFin;
+    if ((b.position || 1) !== (a.position || 1)) return (b.position || 1) - (a.position || 1);
+    return (b.score || 0) - (a.score || 0);
+  });
 
   return (
     <div id="hud-drawer" className="fixed inset-y-0 right-0 z-40 w-full max-w-md glass-panel-strong border-l border-slate-700/80 shadow-2xl flex flex-col">
       <div className="p-4 border-b border-slate-800 flex items-center justify-between">
         <h3 className="font-display text-base font-extrabold text-white">Panel Kelas</h3>
-        <button onClick={onClose} className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
+        <button type="button" onClick={onClose} className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
       </div>
 
       <div className="px-4 pt-3 flex items-center gap-1.5 border-b border-slate-800 pb-3 overflow-x-auto">
@@ -166,9 +183,11 @@ export default function HudDrawer({
                 <div className="text-xs text-slate-400 italic">Belum ada data peringkat kelas.</div>
               ) : (
                 sortedClassRank.map((p, idx) => (
-                  <div key={p.id} className="p-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-xs">
-                    <span className="font-bold text-white">#{idx + 1} {p.avatar} {p.name}</span>
-                    <span className="font-extrabold text-amber-300">Petak {p.position} • {p.score || 0}p</span>
+                  <div key={p.id} className={`p-2.5 rounded-2xl border flex items-center justify-between text-xs ${p.position >= 100 ? 'bg-emerald-500/15 border-emerald-400/40' : 'bg-slate-900/90 border-slate-800'}`}>
+                    <span className="font-bold text-white truncate">
+                      {p.position >= 100 ? `🏆${p.finishOrder ? `#${p.finishOrder}` : ''} ` : `#${idx + 1} `}{p.avatar} {p.name}
+                    </span>
+                    <span className="font-extrabold text-amber-300 shrink-0">Petak {p.position} • {p.score || 0}p</span>
                   </div>
                 ))
               )}
@@ -200,30 +219,40 @@ export default function HudDrawer({
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1">Fase Pembelajaran</label>
               <select value={gradeVal} onChange={(e) => setGradeVal(e.target.value)} className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white">
-                <option value="Fase A">Fase A (Kelas 1–2 SD)</option>
-                <option value="Fase B">Fase B (Kelas 3–4 SD)</option>
-                <option value="Fase C">Fase C (Kelas 5–6 SD)</option>
-                <option value="Fase D">Fase D (Kelas 7–9 SMP)</option>
+                {GRADE_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1">Mata Pelajaran</label>
               <select value={subjectVal} onChange={(e) => setSubjectVal(e.target.value)} className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white">
-                <option value="Matematika">Matematika</option>
-                <option value="Bahasa Indonesia">Bahasa Indonesia</option>
-                <option value="IPA">IPA (Sains)</option>
-                <option value="IPS">IPS</option>
-                <option value="PPKn">PPKn</option>
-                <option value="Bahasa Inggris">Bahasa Inggris</option>
-                <option value="Campuran">Semua Mapel (Campuran)</option>
+                {SUBJECT_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1">Materi Pembelajaran</label>
-              <input type="text" value={topicVal} onChange={(e) => setTopicVal(e.target.value)} placeholder="Contoh: Pecahan, Tata Surya..." className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white" />
+              <input type="text" value={topicVal} onChange={(e) => setTopicVal(e.target.value)} placeholder="Contoh: Rantai Makanan, Pecahan, Tata Surya..." className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white" />
             </div>
-            <button type="submit" className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-extrabold">
-              💾 Terapkan ke Seluruh Siswa
+            <label className="flex items-start gap-2 p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-400/25 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={regenAiOnSave}
+                onChange={(e) => setRegenAiOnSave(e.target.checked)}
+                className="w-4 h-4 mt-0.5 accent-indigo-500 shrink-0"
+              />
+              <span className="text-[11px] font-bold text-indigo-200 leading-snug">
+                ✨ Perbarui daftar soal sesuai materi ini (Gemini AI + Bank Soal)
+              </span>
+            </label>
+            <button
+              type="submit"
+              disabled={isGeneratingAi}
+              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 disabled:opacity-50 text-slate-950 text-xs font-extrabold"
+            >
+              {isGeneratingAi ? '⏳ Menyusun Soal AI...' : '💾 Terapkan ke Seluruh Siswa'}
             </button>
           </form>
 

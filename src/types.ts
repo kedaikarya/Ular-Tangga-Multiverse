@@ -21,6 +21,7 @@ export interface PlayerPawn {
   score: number;
   correctCount: number;
   answeredCount: number;
+  finishOrder?: number;
 }
 
 export interface QuestionItem {

@@ -81,6 +81,7 @@ export async function createRoomInFirestore(room: RoomData, hostUid: string): Pr
       score: 0,
       correctCount: 0,
       answeredCount: 0,
+      finishOrder: 0,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -204,6 +205,7 @@ export async function joinRoomInFirestore(
         score: Math.max(0, Math.floor(Number(player.score) || 0)),
         correctCount: Math.max(0, Math.floor(Number(player.correctCount) || 0)),
         answeredCount: Math.max(0, Math.floor(Number(player.answeredCount) || 0)),
+        finishOrder: Math.max(0, Math.floor(Number(player.finishOrder) || 0)),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -318,6 +320,7 @@ export async function upsertPlayerInFirestore(
           score: Math.max(0, Math.floor(player.score || 0)),
           correctCount: Math.max(0, Math.floor(player.correctCount || 0)),
           answeredCount: Math.max(0, Math.floor(player.answeredCount || 0)),
+          finishOrder: Math.max(0, Math.floor(player.finishOrder || 0)),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
@@ -329,8 +332,88 @@ export async function upsertPlayerInFirestore(
       score: Math.max(0, Math.floor(player.score || 0)),
       correctCount: Math.max(0, Math.floor(player.correctCount || 0)),
       answeredCount: Math.max(0, Math.floor(player.answeredCount || 0)),
+      finishOrder: Math.max(0, Math.floor(player.finishOrder || 0)),
       updatedAt: serverTimestamp()
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function restartRoomInFirestore(
+  code: string,
+  hostUid: string,
+  playerIds: string[],
+  restartMsg?: ChatMessage,
+  restartLogText?: string
+): Promise<void> {
+  const cleanCode = sanitizeRoomCode(code);
+  const path = `rooms/${cleanCode}`;
+  try {
+    const firstBatch = writeBatch(db);
+    firstBatch.update(doc(db, 'rooms', cleanCode), {
+      phase: 'playing',
+      updatedAt: serverTimestamp()
+    });
+
+    const uniqueIds = Array.from(new Set(playerIds.filter(Boolean).map(id => sanitizeId(id))));
+    const firstChunk = uniqueIds.slice(0, 400);
+    firstChunk.forEach(pid => {
+      firstBatch.update(doc(db, 'rooms', cleanCode, 'players', pid), {
+        position: 1,
+        score: 0,
+        correctCount: 0,
+        answeredCount: 0,
+        finishOrder: 0,
+        updatedAt: serverTimestamp()
+      });
+    });
+
+    const nowTime = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+    if (restartMsg) {
+      const mId = sanitizeId(restartMsg.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      firstBatch.set(doc(db, 'rooms', cleanCode, 'messages', mId), {
+        id: mId,
+        roomCode: cleanCode,
+        senderUid: hostUid,
+        senderName: String(restartMsg.senderName || 'Guru').slice(0, 50),
+        avatar: String(restartMsg.avatar || '🔄').slice(0, 16),
+        text: String(restartMsg.text || 'Permainan dimulai ulang!').slice(0, 300),
+        isSystem: Boolean(restartMsg.isSystem),
+        time: String(restartMsg.time || nowTime).slice(0, 20),
+        createdAt: serverTimestamp()
+      });
+    }
+
+    if (restartLogText) {
+      const lId = sanitizeId(`log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      firstBatch.set(doc(db, 'rooms', cleanCode, 'activityLog', lId), {
+        id: lId,
+        roomCode: cleanCode,
+        uid: hostUid,
+        text: String(restartLogText).slice(0, 300),
+        time: nowTime,
+        createdAt: serverTimestamp()
+      });
+    }
+
+    await firstBatch.commit();
+
+    for (let i = 400; i < uniqueIds.length; i += 450) {
+      const chunk = uniqueIds.slice(i, i + 450);
+      const batch = writeBatch(db);
+      chunk.forEach(pid => {
+        batch.update(doc(db, 'rooms', cleanCode, 'players', pid), {
+          position: 1,
+          score: 0,
+          correctCount: 0,
+          answeredCount: 0,
+          finishOrder: 0,
+          updatedAt: serverTimestamp()
+        });
+      });
+      await batch.commit();
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -390,6 +473,76 @@ export async function deleteQuestionInFirestore(code: string, questionId: string
     await deleteDoc(doc(db, 'rooms', cleanCode, 'questions', qId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function saveQuestionsBatchInFirestore(code: string, questions: QuestionItem[]): Promise<void> {
+  const cleanCode = sanitizeRoomCode(code);
+  const path = `rooms/${cleanCode}/questions`;
+  if (!questions || questions.length === 0) return;
+  try {
+    const batch = writeBatch(db);
+    questions.slice(0, 40).forEach((q, idx) => {
+      const qId = sanitizeId(q.id || `q_${Date.now()}_${idx}`);
+      const options = (q.options && q.options.length >= 2 ? q.options : ['A', 'B']).slice(0, 6).map(o => String(o).slice(0, 200));
+      const correctIndex = Math.max(0, Math.min(options.length - 1, Math.floor(q.correctIndex || 0)));
+      batch.set(doc(db, 'rooms', cleanCode, 'questions', qId), {
+        id: qId,
+        roomCode: cleanCode,
+        grade: String(q.grade || 'Fase C').slice(0, 40),
+        subject: String(q.subject || 'IPAS').slice(0, 40),
+        topic: String(q.topic || 'Umum').slice(0, 120),
+        question: String(q.question || '').slice(0, 600),
+        options,
+        correctIndex,
+        steps: Math.max(1, Math.min(12, Math.floor(q.steps || 3))),
+        explanation: String(q.explanation || '').slice(0, 600),
+        createdAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function replaceQuestionsInFirestore(
+  code: string,
+  oldQuestionIds: string[],
+  newQuestions: QuestionItem[]
+): Promise<void> {
+  const cleanCode = sanitizeRoomCode(code);
+  const path = `rooms/${cleanCode}/questions`;
+  try {
+    const batch = writeBatch(db);
+    const newIdSet = new Set(newQuestions.map(q => sanitizeId(q.id)));
+    oldQuestionIds.slice(0, 150).forEach(oldId => {
+      const cleanOldId = sanitizeId(oldId);
+      if (!newIdSet.has(cleanOldId)) {
+        batch.delete(doc(db, 'rooms', cleanCode, 'questions', cleanOldId));
+      }
+    });
+    newQuestions.slice(0, 40).forEach((q, idx) => {
+      const qId = sanitizeId(q.id || `q_${Date.now()}_${idx}`);
+      const options = (q.options && q.options.length >= 2 ? q.options : ['A', 'B']).slice(0, 6).map(o => String(o).slice(0, 200));
+      const correctIndex = Math.max(0, Math.min(options.length - 1, Math.floor(q.correctIndex || 0)));
+      batch.set(doc(db, 'rooms', cleanCode, 'questions', qId), {
+        id: qId,
+        roomCode: cleanCode,
+        grade: String(q.grade || 'Fase C').slice(0, 40),
+        subject: String(q.subject || 'IPAS').slice(0, 40),
+        topic: String(q.topic || 'Umum').slice(0, 120),
+        question: String(q.question || '').slice(0, 600),
+        options,
+        correctIndex,
+        steps: Math.max(1, Math.min(12, Math.floor(q.steps || 3))),
+        explanation: String(q.explanation || '').slice(0, 600),
+        createdAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
@@ -561,7 +714,8 @@ export function subscribeToRoomRealtime(
           position: p.position || 1,
           score: p.score || 0,
           correctCount: p.correctCount || 0,
-          answeredCount: p.answeredCount || 0
+          answeredCount: p.answeredCount || 0,
+          finishOrder: p.finishOrder || 0
         };
       });
       callbacks.onPlayers(players);

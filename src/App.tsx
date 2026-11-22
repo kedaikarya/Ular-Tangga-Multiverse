@@ -16,7 +16,10 @@ import {
   fetchGlobalLeaderboardFromFirestore,
   fetchRoomFromFirestore,
   joinRoomInFirestore,
+  replaceQuestionsInFirestore,
+  restartRoomInFirestore,
   saveQuestionInFirestore,
+  saveQuestionsBatchInFirestore,
   subscribeToRoomRealtime,
   subscribeToTeacherRooms,
   syncUserProfileToFirestore,
@@ -25,7 +28,7 @@ import {
   upsertPlayerInFirestore
 } from './services/firestoreRooms';
 import { PlayerProfile, RoomData, QuestionItem } from './types';
-import { STORAGE_KEYS, DEFAULT_TEACHER_PIN, PAWN_COLORS, SEED_QUESTION_BANK, LADDERS, SNAKES } from './constants';
+import { STORAGE_KEYS, DEFAULT_TEACHER_PIN, PAWN_COLORS, LADDERS, SNAKES, getFilteredSeedQuestions } from './constants';
 import { playSoundEffect, startBackgroundMusic, stopAndDisposeBackgroundMusic } from './utils/audio';
 
 import ThreeCanvas from './components/ThreeCanvas';
@@ -126,12 +129,14 @@ export default function App() {
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: string }>>([]);
   const [isSimRunning, setIsSimRunning] = useState(false);
   const [isAnimatingMove, setIsAnimatingMove] = useState(false);
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const [consecutiveCorrectCount, setConsecutiveCorrectCount] = useState(0);
   const [hasStreakShield, setHasStreakShield] = useState(false);
 
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const studentAskedHistoryRef = useRef<Record<string, Set<string>>>({});
   const simIntervalRef = useRef<any>(null);
+  const isRefillingQuestionsRef = useRef(false);
 
   // Refs to prevent stale closures inside SSE/Firestore callbacks & intervals
   const firebaseUserRef = useRef<User | null>(null);
@@ -414,6 +419,13 @@ export default function App() {
 
           if (meta.phase === 'finished' && prevPhaseRef.current && prevPhaseRef.current !== 'finished') {
             setIsWinnerModalOpen(true);
+          } else if (prevPhaseRef.current === 'finished' && (meta.phase === 'playing' || meta.phase === 'waiting')) {
+            setIsWinnerModalOpen(false);
+            setActiveQuiz(qPrev => ({ ...qPrev, isOpen: false }));
+            setConsecutiveCorrectCount(0);
+            setHasStreakShield(false);
+            studentAskedHistoryRef.current = {};
+            showToast('🔄 Permainan dimulai ulang oleh Guru! Semua bidak kembali ke Petak 1.', 'info');
           }
           if (meta.phase) {
             prevPhaseRef.current = meta.phase;
@@ -434,10 +446,19 @@ export default function App() {
             const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
             const mergedPlayers = { ...players };
             const myId = userProfileRef.current.id;
-            if (isAnimatingMoveRef.current && base.players?.[myId] && mergedPlayers[myId]) {
+            const prevMe = base.players?.[myId];
+            const nextMe = mergedPlayers[myId];
+            if (prevMe && nextMe && (prevMe.answeredCount || 0) > 0 && (nextMe.answeredCount || 0) === 0 && (nextMe.position || 1) === 1 && (nextMe.score || 0) === 0) {
+              setIsWinnerModalOpen(false);
+              setActiveQuiz(qPrev => ({ ...qPrev, isOpen: false }));
+              setConsecutiveCorrectCount(0);
+              setHasStreakShield(false);
+              studentAskedHistoryRef.current = {};
+            }
+            if (isAnimatingMoveRef.current && prevMe && nextMe) {
               mergedPlayers[myId] = {
-                ...mergedPlayers[myId],
-                position: base.players[myId].position
+                ...nextMe,
+                position: prevMe.position
               };
             }
             const next = { ...prev, [currentRoomId]: { ...base, players: mergedPlayers } };
@@ -493,6 +514,12 @@ export default function App() {
 
           if (updatedRoom.phase === 'finished' && prevPhaseRef.current && prevPhaseRef.current !== 'finished') {
             setIsWinnerModalOpen(true);
+          } else if (prevPhaseRef.current === 'finished' && (updatedRoom.phase === 'playing' || updatedRoom.phase === 'waiting')) {
+            setIsWinnerModalOpen(false);
+            setActiveQuiz(qPrev => ({ ...qPrev, isOpen: false }));
+            setConsecutiveCorrectCount(0);
+            setHasStreakShield(false);
+            studentAskedHistoryRef.current = {};
           }
           prevPhaseRef.current = updatedRoom.phase;
         } else if (data.type === 'SOUNDBOARD' && data.soundKey) {
@@ -651,10 +678,7 @@ export default function App() {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
 
-    let questions = SEED_QUESTION_BANK.filter(q => config.subject === 'Campuran' || q.subject === config.subject);
-    if (config.autoAi || questions.length < 5) {
-      questions = [...buildAiQuestionsForTopic(config.grade, config.subject, config.topic), ...questions];
-    }
+    const initialQuestions = getFilteredSeedQuestions(config.grade, config.subject, config.topic);
 
     let fbUser = firebaseUserRef.current;
     if (!fbUser && !anonAuthDisabledRef.current) {
@@ -681,7 +705,7 @@ export default function App() {
       snakeStyle: { ...snakeStyleConfig },
       phase: 'waiting',
       hostId: hostUid,
-      questions,
+      questions: initialQuestions,
       players: {
         [hostUid]: {
           id: hostUid,
@@ -701,7 +725,7 @@ export default function App() {
       updatedAt: Date.now()
     };
 
-    appendChatMessage(newRoom, 'Sistem', '🏫', `Kelas "${config.className}" (${config.grade} • ${config.subject}) dibuka oleh Guru. Kode: ${code}`, true);
+    appendChatMessage(newRoom, 'Sistem', '🏫', `Kelas "${config.className}" (${config.grade} • ${config.subject} - ${config.topic}) dibuka oleh Guru. Kode: ${code}`, true);
     appendActivityLog(newRoom, `Kelas dibuat (${config.grade} • ${config.subject} - ${config.topic})`);
 
     setVisualThemeMode(config.themeMode);
@@ -725,6 +749,35 @@ export default function App() {
         body: JSON.stringify({ room: newRoom })
       }).catch(() => {});
       showToast(`Kelas lokal ${code} siap! Aktifkan Anonymous Auth di Firebase Console untuk sinkron lintas HP.`, 'info');
+    }
+
+    if (config.autoAi) {
+      setIsGeneratingAi(true);
+      showToast(`🤖 Gemini AI sedang menyusun 5 soal khusus ${config.grade} • ${config.subject} (${config.topic})...`, 'info');
+      try {
+        const aiQuestions = await requestGeminiQuestionsFromApi(
+          config.grade,
+          config.subject,
+          config.topic,
+          5,
+          initialQuestions.map(q => q.question)
+        );
+        const activeRoom = openRoomsRef.current[code];
+        if (activeRoom) {
+          const updatedRoom = cloneRoom(activeRoom);
+          updatedRoom.questions = [...aiQuestions, ...(updatedRoom.questions || [])];
+          const currentFbUser = firebaseUserRef.current;
+          persistRoomChange(updatedRoom, 'ROOM_UPDATED', { skipServer: Boolean(currentFbUser) });
+          if (currentFbUser && updatedRoom.hostId === currentFbUser.uid) {
+            await saveQuestionsBatchInFirestore(code, aiQuestions);
+          }
+          showToast(`✨ 5 soal Gemini AI materi "${config.topic}" siap dimainkan!`, 'success');
+        }
+      } catch (err: any) {
+        showToast(err?.message || 'Gagal menyusun soal Gemini AI. Bank soal kurikulum tetap aktif.', 'warning');
+      } finally {
+        setIsGeneratingAi(false);
+      }
     }
   };
 
@@ -874,126 +927,64 @@ export default function App() {
       clearInterval(simIntervalRef.current);
       simIntervalRef.current = null;
     }
+    setIsAnimatingMove(false);
+    isAnimatingMoveRef.current = false;
     setIsLiveBoard2DOpen(false);
+    setIsWinnerModalOpen(false);
+    setIsTeacherDemoModalOpen(false);
+    setIsAiStudioOpen(false);
+    setIsSoundboardOpen(false);
+    setIsSnakeModalOpen(false);
+    setIsBoardModalOpen(false);
+    setActiveQuiz({ isOpen: false, isDemo: false, playerId: '', question: null });
     setCurrentRoomId(null);
     setCurrentUserRole('student');
     setIsHudDrawerOpen(false);
   };
 
-  // --- AI QUESTION BUILDER ---
-  const buildAiQuestionsForTopic = (grade: string, subject: string, topic: string) => {
-    const cleanTopic = (topic || 'Materi Umum').trim();
-    const uid = () => 'ai_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-    const a = Math.floor(Math.random() * 12) + 4;
-    const b = Math.floor(Math.random() * 9) + 3;
-
-    if (subject === 'Matematika') {
-      return [
-        {
-          id: uid(), grade, subject, topic: cleanTopic,
-          question: `[${grade} • ${cleanTopic}] Berapakah hasil dari (${a} × ${b}) + ${a}?`,
-          options: [String(a * b + a), String(a * b + b), String(a * b - a), String((a + 1) * b)],
-          correctIndex: 0, steps: 3,
-          explanation: `${a} × ${b} = ${a * b}, lalu ditambah ${a} menjadi ${a * b + a}.`
-        },
-        {
-          id: uid(), grade, subject, topic: cleanTopic,
-          question: `[${grade} • ${cleanTopic}] Sebuah persegi memiliki panjang sisi ${a} cm. Berapa kelilingnya?`,
-          options: [`${a * 2} cm`, `${a * 4} cm`, `${a * a} cm`, `${a + 4} cm`],
-          correctIndex: 1, steps: 3,
-          explanation: `Keliling persegi = 4 × sisi = 4 × ${a} = ${a * 4} cm.`
-        },
-        {
-          id: uid(), grade, subject, topic: cleanTopic,
-          question: `[${grade} • ${cleanTopic}] Bilangan manakah yang merupakan kelipatan dari ${b}?`,
-          options: [String(b * 4 + 1), String(b * 5), String(b * 3 + 2), String(b * 2 + 1)],
-          correctIndex: 1, steps: 3,
-          explanation: `${b} × 5 = ${b * 5}, sehingga habis dibagi ${b}.`
-        },
-        {
-          id: uid(), grade, subject, topic: cleanTopic,
-          question: `[${grade} • ${cleanTopic}] Jika 1 jam = 60 menit, maka ${b} jam sama dengan ... menit.`,
-          options: [`${b * 30} menit`, `${b * 60} menit`, `${b * 100} menit`, `${b * 45} menit`],
-          correctIndex: 1, steps: 4,
-          explanation: `${b} × 60 menit = ${b * 60} menit.`
-        },
-        {
-          id: uid(), grade, subject, topic: cleanTopic,
-          question: `[${grade} • ${cleanTopic}] Nilai tempat angka 7 pada bilangan 4.725 adalah ...`,
-          options: ['Satuan', 'Puluhan', 'Ratusan', 'Ribuan'],
-          correctIndex: 2, steps: 3,
-          explanation: 'Pada bilangan 4.725, angka 7 menempati posisi ratusan (700).'
-        }
-      ];
+  // --- GEMINI AI QUESTION GENERATION & FILTERING ---
+  const requestGeminiQuestionsFromApi = async (
+    grade: string,
+    subject: string,
+    topic: string,
+    count = 5,
+    existingQuestions: string[] = []
+  ): Promise<QuestionItem[]> => {
+    const res = await fetch('/api/generate-questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grade,
+        subject,
+        topic: (topic || 'Materi Umum').trim(),
+        count,
+        existingQuestions
+      })
+    });
+    const ctype = res.headers.get('content-type') || '';
+    const data = ctype.includes('application/json') ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      throw new Error(data?.error || `Gagal menghubungi layanan Gemini AI (${res.status}).`);
     }
-
-    return [
-      {
-        id: uid(), grade, subject, topic: cleanTopic,
-        question: `[${grade} • ${subject}] Konsep utama yang dipelajari pada materi "${cleanTopic}" bertujuan untuk ...`,
-        options: [
-          'Memahami penerapan konsep dalam kehidupan sehari-hari',
-          'Menghafal tanpa memahami makna',
-          'Mengabaikan bukti ilmiah dan fakta',
-          'Menghindari kerja sama dalam kelompok'
-        ],
-        correctIndex: 0, steps: 3,
-        explanation: `Pembelajaran ${cleanTopic} pada ${grade} menekankan pemahaman konsep dan penerapannya.`
-      },
-      {
-        id: uid(), grade, subject, topic: cleanTopic,
-        question: `[${grade} • ${subject}] Sikap yang tepat saat berdiskusi tentang materi "${cleanTopic}" di kelas adalah ...`,
-        options: [
-          'Memotong pembicaraan teman',
-          'Mendengarkan pendapat teman dengan saling menghargai',
-          'Tidak mau menerima masukan',
-          'Berdiam diri tanpa berpartisipasi'
-        ],
-        correctIndex: 1, steps: 3,
-        explanation: 'Menghargai pendapat teman mencerminkan profil pelajar yang kolaboratif.'
-      },
-      {
-        id: uid(), grade, subject, topic: cleanTopic,
-        question: `[${grade} • ${subject}] Langkah pertama yang paling efektif dalam menganalisis persoalan "${cleanTopic}" adalah ...`,
-        options: [
-          'Langsung menebak jawaban akhir',
-          'Mengidentifikasi informasi penting dan tujuan masalah',
-          'Melewati petunjuk soal',
-          'Menyalin jawaban tanpa memeriksa'
-        ],
-        correctIndex: 1, steps: 4,
-        explanation: 'Mengidentifikasi informasi penting membantu menentukan strategi penyelesaian yang tepat.'
-      },
-      {
-        id: uid(), grade, subject, topic: cleanTopic,
-        question: `[${grade} • ${subject}] Mengapa kita perlu mengaitkan materi "${cleanTopic}" dengan lingkungan sekitar?`,
-        options: [
-          'Agar pembelajaran lebih bermakna dan mudah diterapkan',
-          'Agar materi menjadi lebih sulit dipahami',
-          'Karena tidak ada hubungannya dengan kehidupan',
-          'Supaya tidak perlu belajar di kelas'
-        ],
-        correctIndex: 0, steps: 3,
-        explanation: 'Pembelajaran kontekstual membantu siswa memahami manfaat nyata ilmu yang dipelajari.'
-      },
-      {
-        id: uid(), grade, subject, topic: cleanTopic,
-        question: `[${grade} • ${subject}] Evaluasi hasil belajar pada topik "${cleanTopic}" dilakukan untuk ...`,
-        options: [
-          'Mengetahui bagian yang sudah dikuasai dan perlu ditingkatkan',
-          'Membanding-bandingkan kelemahan teman',
-          'Menghentikan proses belajar',
-          'Menghindari tantangan soal baru'
-        ],
-        correctIndex: 0, steps: 3,
-        explanation: 'Evaluasi membantu mengukur pemahaman serta memperbaiki strategi belajar.'
-      }
-    ];
+    if (!Array.isArray(data?.questions) || data.questions.length === 0) {
+      throw new Error(data?.error || 'Gemini AI tidak mengembalikan soal yang valid.');
+    }
+    return data.questions as QuestionItem[];
   };
 
-  const generateDynamicInfiniteQuestion = (room: RoomData) => {
-    const batch = buildAiQuestionsForTopic(room.grade, room.subject === 'Campuran' ? 'Matematika' : room.subject, room.topic);
-    return batch[Math.floor(Math.random() * batch.length)];
+  const getMatchingQuestionPool = (room: RoomData): QuestionItem[] => {
+    const roomQs = room.questions || [];
+    const subjectMatches = (q: QuestionItem) => {
+      if (room.subject === 'Campuran') return true;
+      if (q.subject === room.subject) return true;
+      if (room.subject === 'IPAS') return q.subject === 'IPA' || q.subject === 'IPS';
+      return false;
+    };
+
+    const exactMatches = roomQs.filter(q => q.grade === room.grade && subjectMatches(q));
+    if (exactMatches.length > 0) return exactMatches;
+    if (roomQs.length > 0) return roomQs;
+    return getFilteredSeedQuestions(room.grade, room.subject, room.topic);
   };
 
   // --- QUIZ & MOVEMENT ---
@@ -1004,21 +995,63 @@ export default function App() {
       showToast('Tunggu Guru memulai atau melanjutkan kelas terlebih dahulu.', 'warning');
       return;
     }
+    if ((room.players?.[userProfile.id]?.position || 1) >= 100) {
+      showToast('🏆 Kamu sudah finish di Petak 100! Pemain lain masih melanjutkan permainan.', 'success');
+      return;
+    }
 
-    const pool = (room.questions && room.questions.length > 0) ? room.questions : SEED_QUESTION_BANK;
+    const pool = getMatchingQuestionPool(room);
     if (!studentAskedHistoryRef.current[userProfile.id]) {
       studentAskedHistoryRef.current[userProfile.id] = new Set();
     }
     const askedSet = studentAskedHistoryRef.current[userProfile.id];
 
     let candidates = pool.filter(q => !askedSet.has(q.id));
-    let chosen: QuestionItem;
+    if (candidates.length === 0) {
+      askedSet.clear();
+      candidates = pool;
+    }
 
-    if (candidates.length > 0) {
-      chosen = candidates[Math.floor(Math.random() * candidates.length)];
-      askedSet.add(chosen.id);
-    } else {
-      chosen = generateDynamicInfiniteQuestion(room);
+    // Prioritize AI-generated or topic-relevant questions first, then pick randomly among top tier
+    const cleanTopic = (room.topic || '').toLowerCase().trim();
+    const topicWords = cleanTopic.split(/[\s,&/\-]+/).filter(w => w.length >= 3);
+    const topicRelevant = cleanTopic
+      ? candidates.filter(q => {
+          const hay = `${q.topic} ${q.question}`.toLowerCase();
+          return hay.includes(cleanTopic) || topicWords.some(w => hay.includes(w));
+        })
+      : [];
+    const pickFrom = topicRelevant.length > 0 ? topicRelevant : candidates;
+    const chosen = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+    askedSet.add(chosen.id);
+
+    // Background Gemini AI refill when unseen question pool runs low
+    const remainingUnseen = pool.filter(q => !askedSet.has(q.id)).length;
+    if (remainingUnseen <= 1 && !isRefillingQuestionsRef.current) {
+      isRefillingQuestionsRef.current = true;
+      const roomCodeSnapshot = room.code;
+      requestGeminiQuestionsFromApi(
+        room.grade,
+        room.subject,
+        room.topic,
+        5,
+        pool.map(q => q.question)
+      )
+        .then((newBatch) => {
+          const latestRoom = openRoomsRef.current[roomCodeSnapshot];
+          if (!latestRoom) return;
+          const updatedRoom = cloneRoom(latestRoom);
+          updatedRoom.questions = [...newBatch, ...(updatedRoom.questions || [])];
+          const fbUser = firebaseUserRef.current;
+          persistRoomChange(updatedRoom, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+          if (fbUser && updatedRoom.hostId === fbUser.uid) {
+            saveQuestionsBatchInFirestore(roomCodeSnapshot, newBatch).catch(console.error);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          isRefillingQuestionsRef.current = false;
+        });
     }
 
     setActiveQuiz({
@@ -1042,6 +1075,7 @@ export default function App() {
     const player = { ...existingPlayer, answeredCount: (existingPlayer.answeredCount || 0) + 1 };
     room.players[playerId] = player;
 
+    let updatedWrongProf: PlayerProfile | null = null;
     if (!activeQuiz.isDemo) {
       const prof = { ...userProfile };
       prof.totalAnswered = (prof.totalAnswered || 0) + 1;
@@ -1066,6 +1100,7 @@ export default function App() {
       } else {
         setConsecutiveCorrectCount(0);
       }
+      updatedWrongProf = prof;
       setUserProfile(prof);
     }
 
@@ -1078,9 +1113,8 @@ export default function App() {
       if (fbUser) {
         upsertPlayerInFirestore(room.code, fbUser.uid, player).catch(console.error);
         addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
-        if (!activeQuiz.isDemo) {
-          const updatedProf = { ...userProfileRef.current, totalAnswered: (userProfileRef.current.totalAnswered || 0) + 1 };
-          syncUserProfileToFirestore(fbUser.uid, updatedProf).catch(console.error);
+        if (!activeQuiz.isDemo && updatedWrongProf) {
+          syncUserProfileToFirestore(fbUser.uid, updatedWrongProf).catch(console.error);
         }
       }
       return;
@@ -1185,10 +1219,18 @@ export default function App() {
         const currentFbUser = firebaseUserRef.current;
 
         if (latestPlayer.position >= 100) {
+          const alreadyFinished = Boolean(latestPlayer.finishOrder && latestPlayer.finishOrder > 0);
           latestPlayer.position = 100;
-          latestPlayer.score = (latestPlayer.score || 0) + 200;
+          if (!alreadyFinished) {
+            const existingFinishers = Object.values(latestRoom.players || {}).filter(
+              p => p.id !== playerId && p.role !== 'teacher' && ((p.finishOrder || 0) > 0 || (p.position || 1) >= 100)
+            ).length;
+            latestPlayer.finishOrder = existingFinishers + 1;
+            latestPlayer.score = (latestPlayer.score || 0) + 200;
+          }
           latestRoom.players[playerId] = latestPlayer;
-          if (!isDemo) {
+
+          if (!isDemo && !alreadyFinished) {
             const winProf: PlayerProfile = {
               ...userProfileRef.current,
               gamesWon: (userProfileRef.current.gamesWon || 0) + 1,
@@ -1201,23 +1243,37 @@ export default function App() {
                 .catch(console.error);
             }
           }
-          const winText = `🏆 ${latestPlayer.avatar} ${latestPlayer.name} mencapai Puncak Petak 100!`;
+
+          const rankLabel = latestPlayer.finishOrder ? ` (Juara #${latestPlayer.finishOrder})` : '';
+          const winText = `🏆 ${latestPlayer.avatar} ${latestPlayer.name} mencapai Petak 100${rankLabel}! Permainan terus berlanjut!`;
           appendActivityLog(latestRoom, winText);
+          playSoundEffect('cheer', soundEnabledRef.current);
+
           if (!isDemo) {
-            latestRoom.phase = 'finished';
+            appendChatMessage(
+              latestRoom,
+              'Sistem',
+              '🏆',
+              `${latestPlayer.name} sampai di Petak 100${rankLabel}! Pemain lain tetap melanjutkan permainan.`,
+              true
+            );
+            const lastChat = latestRoom.messages[latestRoom.messages.length - 1];
+            if (playerId === userProfileRef.current.id) {
+              showToast(`🏆 Selamat! Kamu finish di Petak 100${rankLabel}! Pemain lain tetap bermain.`, 'success');
+            } else {
+              showToast(winText, 'success');
+            }
             persistRoomChange(latestRoom, 'ROOM_UPDATED', {
               playerUpdate: latestPlayer,
               activityText: winText,
-              phase: 'finished',
+              chatMessage: lastChat,
               skipServer: Boolean(currentFbUser)
             });
             if (currentFbUser) {
-              upsertPlayerInFirestore(roomCode, currentFbUser.uid, latestPlayer)
-                .then(() => updateRoomMetaInFirestore(roomCode, { phase: 'finished' }))
-                .catch(console.error);
+              upsertPlayerInFirestore(roomCode, currentFbUser.uid, latestPlayer).catch(console.error);
               addActivityLogInFirestore(roomCode, currentFbUser.uid, winText).catch(console.error);
+              if (lastChat) addChatMessageInFirestore(roomCode, currentFbUser.uid, lastChat).catch(console.error);
             }
-            setIsWinnerModalOpen(true);
             return;
           }
         }
@@ -1236,11 +1292,62 @@ export default function App() {
   };
 
   // --- TEACHER ACTIONS ---
+  const handleRestartClass = () => {
+    const live = openRoomsRef.current[currentRoomIdRef.current || ''];
+    if (!live || currentUserRole !== 'teacher') return;
+
+    if (isSimRunningRef.current || simIntervalRef.current) {
+      setIsSimRunning(false);
+      isSimRunningRef.current = false;
+      clearInterval(simIntervalRef.current);
+      simIntervalRef.current = null;
+    }
+    setIsAnimatingMove(false);
+    isAnimatingMoveRef.current = false;
+    setIsWinnerModalOpen(false);
+    setIsTeacherDemoModalOpen(false);
+    setActiveQuiz({ isOpen: false, isDemo: false, playerId: '', question: null });
+    setConsecutiveCorrectCount(0);
+    setHasStreakShield(false);
+    studentAskedHistoryRef.current = {};
+
+    const room = cloneRoom(live);
+    room.phase = 'playing';
+    const playerIds: string[] = [];
+    Object.keys(room.players || {}).forEach(pid => {
+      playerIds.push(pid);
+      room.players[pid] = {
+        ...room.players[pid],
+        position: 1,
+        score: 0,
+        correctCount: 0,
+        answeredCount: 0,
+        finishOrder: 0
+      };
+    });
+
+    const actText = '🔄 Guru memulai ulang permainan (semua bidak kembali ke Petak 1)';
+    appendChatMessage(room, 'Guru', '🔄', 'Permainan dimulai ulang! Semua bidak kembali ke Petak 1. Ayo bersemangat!', true);
+    appendActivityLog(room, actText);
+    const lastMsg = room.messages[room.messages.length - 1];
+
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+
+    if (fbUser && room.hostId === fbUser.uid) {
+      restartRoomInFirestore(room.code, fbUser.uid, playerIds, lastMsg, actText).catch(err => {
+        console.error('Restart room Firestore error:', err);
+        showToast('Gagal sinkronisasi Mulai Ulang ke Cloud.', 'error');
+      });
+    }
+    showToast('🔄 Permainan dimulai ulang! Semua bidak kembali ke Petak 1.', 'success');
+  };
+
   const handleStartClass = () => {
     const live = openRoomsRef.current[currentRoomId || ''];
     if (!live) return;
     if (live.phase === 'finished') {
-      showToast('Kelas telah selesai. Buat kelas baru untuk sesi berikutnya.', 'info');
+      handleRestartClass();
       return;
     }
     const room = cloneRoom(live);
@@ -1305,25 +1412,77 @@ export default function App() {
     showToast('Permainan dihentikan.', 'warning');
   };
 
-  const handleUpdateTeacherSettings = (grade: string, subject: string, topic: string) => {
+  const handleUpdateTeacherSettings = async (
+    grade: string,
+    subject: string,
+    topic: string,
+    regenerateQuestions = true
+  ) => {
     const live = openRoomsRef.current[currentRoomId || ''];
-    if (!live || live.phase === 'finished') return;
+    if (!live) return;
+    if (live.phase === 'finished') {
+      showToast('Sesi telah selesai. Klik "Mulai Ulang" untuk mengubah pengaturan.', 'info');
+      return;
+    }
     const room = cloneRoom(live);
+    const oldQuestionIds = (room.questions || []).map(q => q.id);
     room.grade = grade;
     room.subject = subject;
     room.topic = topic;
+
+    const freshSeeds = regenerateQuestions ? getFilteredSeedQuestions(grade, subject, topic) : null;
+    if (freshSeeds) {
+      room.questions = freshSeeds;
+      studentAskedHistoryRef.current = {};
+    }
+
     appendChatMessage(room, 'Guru', '📚', `Materi diperbarui: ${grade} • ${subject} (${topic})`, true);
-    const actText = `📚 Mapel diubah: ${grade} • ${subject}`;
+    const actText = `📚 Mapel diubah: ${grade} • ${subject} (${topic})`;
     appendActivityLog(room, actText);
     const fbUser = firebaseUserRef.current;
     persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+
     if (fbUser && room.hostId === fbUser.uid) {
       updateRoomMetaInFirestore(room.code, { grade, subject, topic }).catch(console.error);
       const lastMsg = room.messages[room.messages.length - 1];
       if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
       addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+      if (freshSeeds) {
+        replaceQuestionsInFirestore(room.code, oldQuestionIds, freshSeeds).catch(console.error);
+      }
     }
-    showToast('Pengaturan mapel & materi diterapkan ke seluruh siswa!', 'success');
+
+    if (!regenerateQuestions) {
+      showToast('Pengaturan mapel & materi diterapkan ke seluruh siswa!', 'success');
+      return;
+    }
+
+    showToast(`Pengaturan diterapkan! Gemini AI sedang menyusun 5 soal ${grade} • ${subject}...`, 'info');
+    setIsGeneratingAi(true);
+    try {
+      const aiQuestions = await requestGeminiQuestionsFromApi(
+        grade,
+        subject,
+        topic,
+        5,
+        (freshSeeds || []).map(q => q.question)
+      );
+      const latestRoom = openRoomsRef.current[room.code];
+      if (latestRoom) {
+        const updatedRoom = cloneRoom(latestRoom);
+        updatedRoom.questions = [...aiQuestions, ...(freshSeeds || updatedRoom.questions || [])];
+        const currentFbUser = firebaseUserRef.current;
+        persistRoomChange(updatedRoom, 'ROOM_UPDATED', { skipServer: Boolean(currentFbUser) });
+        if (currentFbUser && updatedRoom.hostId === currentFbUser.uid) {
+          await saveQuestionsBatchInFirestore(room.code, aiQuestions);
+        }
+        showToast(`✨ 5 soal Gemini AI untuk ${grade} • ${subject} (${topic}) siap digunakan!`, 'success');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menyusun soal Gemini AI. Bank soal sesuai fase tetap diterapkan.', 'warning');
+    } finally {
+      setIsGeneratingAi(false);
+    }
   };
 
   const handleTriggerSoundboard = (soundKey: string, soundLabel: string) => {
@@ -1385,7 +1544,7 @@ export default function App() {
       }
     }
 
-    const pool = room.questions && room.questions.length > 0 ? room.questions : SEED_QUESTION_BANK;
+    const pool = getMatchingQuestionPool(room);
     const chosen = pool[Math.floor(Math.random() * pool.length)];
 
     setActiveQuiz({
@@ -1451,7 +1610,19 @@ export default function App() {
         return;
       }
       const nextRoom = cloneRoom(liveRoom);
-      const bot = bots[botCursor % bots.length];
+      const unfinishedBots = bots.filter(b => {
+        const p = nextRoom.players?.[b.id];
+        return p && (p.position || 1) < 100;
+      });
+      if (unfinishedBots.length === 0) {
+        clearInterval(simIntervalRef.current);
+        simIntervalRef.current = null;
+        setIsSimRunning(false);
+        isSimRunningRef.current = false;
+        showToast('🤖 Semua siswa simulasi telah mencapai Petak 100!', 'success');
+        return;
+      }
+      const bot = unfinishedBots[botCursor % unfinishedBots.length];
       botCursor++;
       const existing = nextRoom.players?.[bot.id];
       if (!existing) return;
@@ -1677,6 +1848,7 @@ export default function App() {
             onStartClass={handleStartClass}
             onPauseClass={handlePauseClass}
             onStopClass={handleStopClass}
+            onRestartClass={handleRestartClass}
             onOpenTeacherDemo={() => setIsTeacherDemoModalOpen(true)}
             onOpenAiStudio={() => setIsAiStudioOpen(true)}
             onOpenSoundboard={() => setIsSoundboardOpen(true)}
@@ -1740,6 +1912,7 @@ export default function App() {
             currentUserRole={currentUserRole}
             onSendChatMessage={handleSendChatMessage}
             onUpdateTeacherSettings={handleUpdateTeacherSettings}
+            isGeneratingAi={isGeneratingAi}
             onOpenAiStudio={() => setIsAiStudioOpen(true)}
             onOpenSnakeCustomizer={() => setIsSnakeModalOpen(true)}
             onOpenBoardTheme={() => setIsBoardModalOpen(true)}
@@ -1757,7 +1930,10 @@ export default function App() {
         isOpen={isTeacherPinModalOpen}
         mode={teacherPinMode}
         storedPin={getStoredTeacherPin()}
-        onClose={() => setIsTeacherPinModalOpen(false)}
+        onClose={() => {
+          setIsTeacherPinModalOpen(false);
+          setPendingDeleteCode(null);
+        }}
         onSuccessVerify={() => {
           try { sessionStorage.setItem(STORAGE_KEYS.TEACHER_SESSION, 'unlocked'); } catch (_) {}
           setIsTeacherPinModalOpen(false);
@@ -1809,22 +1985,36 @@ export default function App() {
         isOpen={isAiStudioOpen}
         onClose={() => setIsAiStudioOpen(false)}
         grade={currentRoom?.grade || 'Fase C'}
-        subject={currentRoom?.subject || 'Matematika'}
-        topic={currentRoom?.topic || 'Umum'}
-        questions={currentRoom?.questions || SEED_QUESTION_BANK}
-        onGenerateAi={(g, s, t) => {
+        subject={currentRoom?.subject || 'IPAS'}
+        topic={currentRoom?.topic || 'Rantai Makanan'}
+        questions={currentRoom?.questions || getFilteredSeedQuestions(currentRoom?.grade || 'Fase C', currentRoom?.subject || 'IPAS', currentRoom?.topic)}
+        isGeneratingAi={isGeneratingAi}
+        onGenerateAi={async (g, s, t) => {
           if (!currentRoom) return;
-          const generated = buildAiQuestionsForTopic(g, s, t);
-          const updated = cloneRoom(currentRoom);
-          updated.questions = [...generated, ...(updated.questions || [])];
-          const fbUser = firebaseUserRef.current;
-          persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
-          if (fbUser && currentRoom.hostId === fbUser.uid) {
-            generated.forEach(q => {
-              saveQuestionInFirestore(currentRoom.code, q, false).catch(console.error);
-            });
+          const roomCode = currentRoom.code;
+          setIsGeneratingAi(true);
+          try {
+            const generated = await requestGeminiQuestionsFromApi(
+              g,
+              s,
+              t,
+              5,
+              (currentRoom.questions || []).map(q => q.question)
+            );
+            const liveRoom = openRoomsRef.current[roomCode] || currentRoom;
+            const updated = cloneRoom(liveRoom);
+            updated.questions = [...generated, ...(updated.questions || [])];
+            const fbUser = firebaseUserRef.current;
+            persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+            if (fbUser && updated.hostId === fbUser.uid) {
+              await saveQuestionsBatchInFirestore(roomCode, generated);
+            }
+            showToast(`✨ 5 soal Gemini AI (${g} • ${s}) berhasil ditambahkan!`, 'success');
+          } catch (err: any) {
+            showToast(err?.message || 'Gagal menghubungi Gemini AI untuk membuat soal.', 'error');
+          } finally {
+            setIsGeneratingAi(false);
           }
-          showToast('5 soal baru berhasil dibuat oleh AI!', 'success');
         }}
         onSaveQuestion={(q, editId) => {
           if (!currentRoom) return;
@@ -1877,7 +2067,9 @@ export default function App() {
       <WinnerModal
         isOpen={isWinnerModalOpen}
         room={currentRoom}
+        isTeacher={currentUserRole === 'teacher'}
         onClose={() => setIsWinnerModalOpen(false)}
+        onRestartClass={handleRestartClass}
       />
 
       <TeacherDemoModal

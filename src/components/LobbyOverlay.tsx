@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { PlayerProfile, RoomData } from '../types';
 import { AVATAR_OPTIONS, AVATAR_NAMES } from '../constants';
 
@@ -45,6 +45,12 @@ export default function LobbyOverlay({
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [nameRequiredHint, setNameRequiredHint] = useState(false);
   const studentNameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (userProfile.name && userProfile.name !== 'Siswa Pintar') {
+      setStudentNameInput(userProfile.name);
+    }
+  }, [userProfile.name]);
 
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();

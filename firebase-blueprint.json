@@ -57,6 +57,7 @@
         "score": { "type": "integer" },
         "correctCount": { "type": "integer" },
         "answeredCount": { "type": "integer" },
+        "finishOrder": { "type": "integer", "description": "Urutan juara saat mencapai Petak 100 (0 = belum finish)" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

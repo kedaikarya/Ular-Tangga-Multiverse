@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PlayerProfile } from '../types';
 import { AVATAR_OPTIONS, AVATAR_NAMES } from '../constants';
 
@@ -21,6 +21,12 @@ export default function OverlayModal({
 }: OverlayModalProps) {
   const [profileNameInput, setProfileNameInput] = useState(userProfile.name);
 
+  useEffect(() => {
+    if (isOpen) {
+      setProfileNameInput(userProfile.name);
+    }
+  }, [isOpen, userProfile.name]);
+
   if (!isOpen || !kind) return null;
 
   const handleProfileSave = (e: React.FormEvent) => {
@@ -40,7 +46,7 @@ export default function OverlayModal({
           <h3 className="font-display text-lg font-extrabold text-white">
             {kind === 'leaderboard' ? '🏆 Papan Peringkat Global' : kind === 'analytics' ? '📊 Analitik Belajar Siswa' : '🦊 Profil & Karakter Bidak'}
           </h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
+          <button type="button" onClick={onClose} className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
         </div>
 
         <div className="p-5 max-h-[75dvh] overflow-y-auto">

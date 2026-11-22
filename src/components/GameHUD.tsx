@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { RoomData, PlayerProfile } from '../types';
+import React, { useState, useEffect } from 'react';
+import { RoomData, PlayerProfile, PlayerPawn } from '../types';
+import { SNAKE_COLOR_PRESETS } from '../constants';
 
 interface GameHUDProps {
   room: RoomData | null;
@@ -19,6 +20,7 @@ interface GameHUDProps {
   onStartClass: () => void;
   onPauseClass: () => void;
   onStopClass: () => void;
+  onRestartClass: () => void;
   onOpenTeacherDemo: () => void;
   onOpenAiStudio: () => void;
   onOpenSoundboard: () => void;
@@ -31,6 +33,16 @@ interface GameHUDProps {
   onOpenChangePin: () => void;
   onEndClassPodium: () => void;
   onOpenQuizModal: () => void;
+}
+
+function sortStudentsByRank(list: PlayerPawn[]): PlayerPawn[] {
+  return [...list].sort((a, b) => {
+    const aFin = (a.finishOrder && a.finishOrder > 0) ? a.finishOrder : Number.MAX_SAFE_INTEGER;
+    const bFin = (b.finishOrder && b.finishOrder > 0) ? b.finishOrder : Number.MAX_SAFE_INTEGER;
+    if (aFin !== bFin) return aFin - bFin;
+    if ((b.position || 1) !== (a.position || 1)) return (b.position || 1) - (a.position || 1);
+    return (b.score || 0) - (a.score || 0);
+  });
 }
 
 export default function GameHUD({
@@ -51,6 +63,7 @@ export default function GameHUD({
   onStartClass,
   onPauseClass,
   onStopClass,
+  onRestartClass,
   onOpenTeacherDemo,
   onOpenAiStudio,
   onOpenSoundboard,
@@ -66,14 +79,28 @@ export default function GameHUD({
 }: GameHUDProps) {
   const [hudMinimized, setHudMinimized] = useState(false);
   const [showMobileTeacherTools, setShowMobileTeacherTools] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+
+  useEffect(() => {
+    if (!confirmRestart) return;
+    const timer = setTimeout(() => setConfirmRestart(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmRestart]);
+
+  useEffect(() => {
+    setConfirmRestart(false);
+  }, [room?.code, room?.phase]);
 
   if (!room) return null;
 
   const isTeacher = currentUserRole === 'teacher';
-  const me = room.players?.[userProfile.id] || { position: 1, score: 0, correctCount: 0 };
-  const students = Object.values(room.players || {})
-    .filter(p => p.role !== 'teacher')
-    .sort((a, b) => (b.position - a.position) || (b.score - a.score));
+  const me = room.players?.[userProfile.id] || { position: 1, score: 0, correctCount: 0, finishOrder: 0 };
+  const isPlayerFinished = (me.position || 1) >= 100;
+
+  const students = sortStudentsByRank(
+    Object.values(room.players || {}).filter(p => p.role !== 'teacher')
+  );
+  const finishedCount = students.filter(p => (p.position || 1) >= 100).length;
 
   const leader = students[0];
   const latestLog = room.activityLog?.[0];
@@ -96,7 +123,56 @@ export default function GameHUD({
     } catch (_) {}
   };
 
+  const handleRestartClick = () => {
+    if (!confirmRestart) {
+      setConfirmRestart(true);
+      return;
+    }
+    setConfirmRestart(false);
+    setShowMobileTeacherTools(false);
+    onRestartClass();
+  };
+
   const musicTrackLabel = musicStyle === 'chill' ? '🎹 Fokus' : musicStyle === 'race' ? '🚀 Lomba' : '🎶 Ceria';
+  const snakeSwatch =
+    room.snakeStyle?.colorPreset === 'custom'
+      ? room.snakeStyle?.customHex || '#22c55e'
+      : SNAKE_COLOR_PRESETS[room.snakeStyle?.colorPreset || 'green']?.swatch || '#16a34a';
+  const themeLabel = room.themeMode === 'modern' ? '🛝 Perosotan & Lift' : '🐍 Ular & Tangga';
+  const elevationLabel =
+    room.elevationStyle === 'terraced'
+      ? '🏔️ Terasering'
+      : room.elevationStyle === 'pyramid'
+      ? '🔺 Piramida'
+      : '🧱 Baris Variatif';
+
+  const studentButtonLabel =
+    room.phase === 'waiting'
+      ? '⏳ Tunggu Guru...'
+      : room.phase === 'paused'
+      ? '⏸️ Dijeda Guru'
+      : room.phase === 'stopped'
+      ? '⏹️ Dihentikan Guru'
+      : room.phase === 'finished'
+      ? '🏁 Sesi Selesai'
+      : isPlayerFinished
+      ? `🏆 Finish di Petak 100${me.finishOrder ? ` (#${me.finishOrder})` : '!'}`
+      : isAnimatingMove
+      ? '🏃 Melangkah...'
+      : '🧠 Jawab Soal (∞)';
+
+  const studentHintLabel =
+    room.phase === 'waiting'
+      ? 'Guru sedang menyiapkan kelas. Bersiaplah!'
+      : room.phase === 'paused'
+      ? 'Tunggu Guru menekan tombol Lanjutkan.'
+      : room.phase === 'stopped'
+      ? 'Permainan sedang dihentikan sementara oleh Guru.'
+      : room.phase === 'finished'
+      ? 'Sesi kelas selesai. Tunggu Guru menekan Mulai Ulang jika bermain lagi.'
+      : isPlayerFinished
+      ? 'Hebat! Kamu sudah sampai Petak 100. Pemain lain masih melanjutkan permainan.'
+      : 'Jawab soal benar untuk melangkah maju di papan 3D!';
 
   return (
     <div id="game-hud" className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-2 sm:p-4">
@@ -108,6 +184,7 @@ export default function GameHUD({
           {/* Kiri: Keluar + Kode + Role + Fase */}
           <div className="glass-panel rounded-2xl px-2 sm:px-3 py-1.5 flex items-center gap-1.5 sm:gap-2 shadow-xl">
             <button
+              type="button"
               onClick={onLeaveRoom}
               className="px-2 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-200 text-[11px] sm:text-xs font-extrabold transition"
               title="Keluar Kelas"
@@ -115,6 +192,7 @@ export default function GameHUD({
               ←<span className="hidden sm:inline"> Keluar</span>
             </button>
             <button
+              type="button"
               onClick={onCopyCode}
               className="px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 border border-yellow-200 text-slate-950 font-mono shadow-md transition active:scale-95 flex items-center gap-1.5"
               title="Klik untuk Salin Kode Kelas"
@@ -142,11 +220,17 @@ export default function GameHUD({
                 🛡️ Perisai
               </span>
             )}
+            {finishedCount > 0 && (
+              <span className="px-2 py-0.5 rounded-lg bg-emerald-500/25 border border-emerald-400/50 text-emerald-200 text-[11px] font-extrabold">
+                🏆 {finishedCount} Finish
+              </span>
+            )}
           </div>
 
           {/* Kanan: Kamera, Papan 2D, Audio, Zen */}
           <div className="glass-panel rounded-2xl px-1.5 sm:px-2.5 py-1 flex items-center gap-1 shadow-xl">
             <button
+              type="button"
               onClick={onOpenLiveBoard2D}
               className="px-2 sm:px-2.5 py-1.5 rounded-xl bg-indigo-500/30 hover:bg-indigo-500/45 border border-indigo-400/50 text-indigo-100 text-[11px] font-extrabold transition flex items-center gap-1"
               title="Lihat Papan Live 2D & Pantauan Siswa"
@@ -154,28 +238,29 @@ export default function GameHUD({
               <span>🗺️</span>
               <span className="hidden sm:inline">Live 2D</span>
             </button>
-            <button onClick={() => onResetCamera('follow')} className="px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Kamera Fokus Bidak">
+            <button type="button" onClick={() => onResetCamera('follow')} className="px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Kamera Fokus Bidak">
               🎯<span className="hidden md:inline"> Fokus</span>
             </button>
-            <button onClick={() => onResetCamera('isometric')} className="px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Sudut 3D Penuh">
+            <button type="button" onClick={() => onResetCamera('isometric')} className="px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Sudut 3D Penuh">
               📐<span className="hidden md:inline"> 3D</span>
             </button>
-            <button onClick={() => onResetCamera('top')} className="hidden sm:inline-flex px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Tampak Atas">
+            <button type="button" onClick={() => onResetCamera('top')} className="hidden sm:inline-flex px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition" title="Tampak Atas">
               ⬆️<span className="hidden md:inline"> Atas</span>
             </button>
-            <button onClick={onToggleMusic} className={`p-1.5 rounded-xl border text-[11px] font-extrabold transition ${musicEnabled ? 'bg-pink-500/25 border-pink-400/50 text-pink-100' : 'bg-slate-800/90 border-slate-700 text-slate-400'}`} title="Musik Latar">
+            <button type="button" onClick={onToggleMusic} className={`p-1.5 rounded-xl border text-[11px] font-extrabold transition ${musicEnabled ? 'bg-pink-500/25 border-pink-400/50 text-pink-100' : 'bg-slate-800/90 border-slate-700 text-slate-400'}`} title="Musik Latar">
               {musicEnabled ? '🎵' : '🔇'}
             </button>
-            <button onClick={onCycleMusicStyle} className="hidden lg:inline-flex px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition">
+            <button type="button" onClick={onCycleMusicStyle} className="hidden lg:inline-flex px-2 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition">
               {musicTrackLabel}
             </button>
-            <button onClick={onToggleSound} className="p-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-bold transition" title="Efek Suara">
+            <button type="button" onClick={onToggleSound} className="p-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-bold transition" title="Efek Suara">
               {soundEnabled ? '🔊' : '🔇'}
             </button>
-            <button onClick={toggleNativeFullscreen} className="hidden sm:inline-flex p-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-bold transition" title="Layar Penuh">
+            <button type="button" onClick={toggleNativeFullscreen} className="hidden sm:inline-flex p-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-bold transition" title="Layar Penuh">
               ⛶
             </button>
             <button
+              type="button"
               onClick={() => setHudMinimized(m => !m)}
               className={`px-2 py-1.5 rounded-xl border text-[11px] font-extrabold transition ${hudMinimized ? 'bg-amber-500 text-slate-950 border-amber-300' : 'bg-slate-800/90 border-slate-700 text-slate-200'}`}
               title={hudMinimized ? 'Tampilkan Kontrol' : 'Sembunyikan UI agar Papan 3D Penuh'}
@@ -189,6 +274,7 @@ export default function GameHUD({
         {!hudMinimized && (
           <div className="lg:hidden flex items-center justify-between gap-2 px-3 py-1.5 rounded-2xl glass-panel border border-amber-400/30 shadow-lg text-[11px]">
             <button
+              type="button"
               onClick={onOpenLiveBoard2D}
               className="flex-1 min-w-0 flex items-center gap-2 text-left"
             >
@@ -196,7 +282,7 @@ export default function GameHUD({
               <span className="text-slate-400">•</span>
               <span className="truncate text-slate-200 font-semibold">
                 {leader
-                  ? `#1 ${leader.avatar} ${leader.name} (Petak ${leader.position})`
+                  ? `${leader.position >= 100 ? '🏆 ' : '#1 '}${leader.avatar} ${leader.name} (Petak ${leader.position})`
                   : latestLog
                   ? latestLog.text
                   : `${room.grade} • ${room.subject}`}
@@ -207,12 +293,14 @@ export default function GameHUD({
                 <span className="px-1.5 py-0.5 rounded-lg bg-cyan-500/25 text-cyan-200 text-[10px] font-extrabold">🛡️</span>
               )}
               <button
+                type="button"
                 onClick={onOpenLiveBoard2D}
                 className="px-2 py-1 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-200 text-[10px] font-extrabold"
               >
                 Pantau 2D
               </button>
               <button
+                type="button"
                 onClick={() => onOpenHudDrawer(isTeacher ? 'players' : 'rank')}
                 className="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[10px] font-extrabold"
               >
@@ -233,13 +321,15 @@ export default function GameHUD({
               <h3 className="font-display text-xs font-extrabold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
                 📡 Monitor Real-Time
               </h3>
-              <p className="text-[11px] text-slate-300">{students.length} siswa bergabung</p>
+              <p className="text-[11px] text-slate-300">
+                {students.length} peserta{finishedCount > 0 ? ` • 🏆 ${finishedCount} finish` : ''}
+              </p>
             </div>
             <div className="flex items-center gap-1">
-              <button onClick={onOpenLiveBoard2D} className="px-2 py-1 rounded-xl bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/40 text-indigo-200 text-[11px] font-extrabold transition" title="Buka Papan 2D">
+              <button type="button" onClick={onOpenLiveBoard2D} className="px-2 py-1 rounded-xl bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/40 text-indigo-200 text-[11px] font-extrabold transition" title="Buka Papan 2D">
                 🗺️ 2D
               </button>
-              <button onClick={() => onOpenHudDrawer('teacher')} className="px-2 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[11px] font-extrabold transition">
+              <button type="button" onClick={() => onOpenHudDrawer('teacher')} className="px-2 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[11px] font-extrabold transition" title="Pengaturan Kelas">
                 ⚙️
               </button>
             </div>
@@ -250,8 +340,10 @@ export default function GameHUD({
               <div className="text-[11px] text-slate-400 italic py-2">Menunggu siswa bergabung dengan kode <strong className="text-amber-300">{room.code}</strong>...</div>
             ) : (
               students.map((p, i) => (
-                <div key={p.id} className="px-2.5 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-[11px]">
-                  <span className="font-bold text-white truncate">{i + 1}. {p.avatar} {p.name}</span>
+                <div key={p.id} className={`px-2.5 py-1.5 rounded-xl border flex items-center justify-between text-[11px] ${p.position >= 100 ? 'bg-emerald-500/15 border-emerald-400/40' : 'bg-slate-900/90 border-slate-800'}`}>
+                  <span className="font-bold text-white truncate">
+                    {p.position >= 100 ? `🏆${p.finishOrder ? `#${p.finishOrder}` : ''} ` : `${i + 1}. `}{p.avatar} {p.name}
+                  </span>
                   <span className="font-extrabold text-amber-300 shrink-0 tabular-nums">Petak {p.position} • {p.score || 0}p</span>
                 </div>
               ))
@@ -284,16 +376,19 @@ export default function GameHUD({
           {/* Laci Ekstra Menu Guru di Smartphone */}
           {isTeacher && showMobileTeacherTools && (
             <div className="lg:hidden glass-panel-strong rounded-2xl p-2.5 border border-amber-400/35 shadow-2xl grid grid-cols-3 sm:grid-cols-4 gap-1.5 text-[11px]">
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenTeacherDemo(); }} className="p-2 rounded-xl bg-sky-500/20 border border-sky-400/40 text-sky-200 font-extrabold">🎮 Demo</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenAiStudio(); }} className="p-2 rounded-xl bg-indigo-600 text-white font-extrabold">✨ Soal AI</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenHudDrawer('teacher'); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-extrabold">📚 Mapel</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onCycleThemeMode(); }} className="p-2 rounded-xl bg-purple-500/20 border border-purple-400/40 text-purple-200 font-extrabold">🐍 Tema</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenSnakeCustomizer(); }} className="p-2 rounded-xl bg-pink-500/20 border border-pink-400/40 text-pink-200 font-extrabold">🎨 Ular</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenBoardTheme(); }} className="p-2 rounded-xl bg-amber-600/25 border border-amber-400/45 text-amber-100 font-extrabold">🪵 Papan</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onCycleElevation(); }} className="p-2 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-200 font-extrabold">🧱 Elevasi</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenChangePin(); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 font-extrabold">🔑 PIN</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onOpenHudDrawer('chat'); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 font-extrabold">💬 Chat</button>
-              <button onClick={() => { setShowMobileTeacherTools(false); onEndClassPodium(); }} className="p-2 rounded-xl bg-rose-500/20 border border-rose-400/40 text-rose-200 font-extrabold">🏁 Podium</button>
+              <button type="button" onClick={handleRestartClick} className={`p-2 rounded-xl border font-extrabold ${confirmRestart ? 'bg-amber-400 text-slate-950 border-amber-200 animate-pulse' : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'}`}>
+                {confirmRestart ? '❓ Yakin Reset?' : '🔄 Mulai Ulang'}
+              </button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenTeacherDemo(); }} className="p-2 rounded-xl bg-sky-500/20 border border-sky-400/40 text-sky-200 font-extrabold">🎮 Demo</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenAiStudio(); }} className="p-2 rounded-xl bg-indigo-600 text-white font-extrabold">✨ Soal AI</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenHudDrawer('teacher'); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-extrabold">📚 Mapel</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onCycleThemeMode(); }} className="p-2 rounded-xl bg-purple-500/20 border border-purple-400/40 text-purple-200 font-extrabold">{room.themeMode === 'modern' ? '🛝 Lift' : '🐍 Tema'}</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenSnakeCustomizer(); }} className="p-2 rounded-xl bg-pink-500/20 border border-pink-400/40 text-pink-200 font-extrabold">🎨 Ular</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenBoardTheme(); }} className="p-2 rounded-xl bg-amber-600/25 border border-amber-400/45 text-amber-100 font-extrabold">🪵 Papan</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onCycleElevation(); }} className="p-2 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-200 font-extrabold">🧱 Elevasi</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenChangePin(); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 font-extrabold">🔑 PIN</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onOpenHudDrawer('chat'); }} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 font-extrabold">💬 Chat</button>
+              <button type="button" onClick={() => { setShowMobileTeacherTools(false); onEndClassPodium(); }} className="p-2 rounded-xl bg-rose-500/20 border border-rose-400/40 text-rose-200 font-extrabold">🏁 Podium</button>
             </div>
           )}
 
@@ -302,30 +397,47 @@ export default function GameHUD({
               {/* Tampilan Smartphone (< lg): 1 Baris Kompak & Scrollable */}
               <div className="flex lg:hidden items-center justify-between gap-1.5 overflow-x-auto no-scrollbar">
                 {room.phase === 'waiting' ? (
-                  <button onClick={onStartClass} className="shrink-0 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 text-xs font-extrabold shadow">
+                  <button type="button" onClick={onStartClass} className="shrink-0 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 text-xs font-extrabold shadow">
                     ▶️ Mulai
                   </button>
+                ) : room.phase === 'finished' ? (
+                  <button type="button" onClick={handleRestartClick} className={`shrink-0 px-3 py-2 rounded-xl text-xs font-extrabold shadow ${confirmRestart ? 'bg-amber-400 text-slate-950 animate-pulse' : 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950'}`}>
+                    {confirmRestart ? '❓ Yakin?' : '🔄 Mulai Ulang'}
+                  </button>
                 ) : (
-                  <button onClick={onPauseClass} className="shrink-0 px-3 py-2 rounded-xl bg-amber-400 text-slate-950 text-xs font-extrabold shadow">
+                  <button type="button" onClick={onPauseClass} className="shrink-0 px-3 py-2 rounded-xl bg-amber-400 text-slate-950 text-xs font-extrabold shadow">
                     {room.phase === 'playing' ? '⏸️ Jeda' : '▶️ Lanjut'}
                   </button>
                 )}
-                <button onClick={onStopClass} className="shrink-0 px-2.5 py-2 rounded-xl bg-rose-600 text-white text-xs font-extrabold">
-                  ⏹️
-                </button>
-                <button onClick={onOpenLiveBoard2D} className="shrink-0 px-2.5 py-2 rounded-xl bg-indigo-500/25 border border-indigo-400/45 text-indigo-100 text-xs font-extrabold">
+                {room.phase !== 'waiting' && room.phase !== 'finished' && (
+                  <button
+                    type="button"
+                    onClick={handleRestartClick}
+                    className={`shrink-0 px-2.5 py-2 rounded-xl border text-xs font-extrabold ${confirmRestart ? 'bg-amber-400 text-slate-950 border-amber-200 animate-pulse' : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'}`}
+                    title="Mulai Ulang Permainan dari Petak 1"
+                  >
+                    {confirmRestart ? '❓ Yakin' : '🔄'}
+                  </button>
+                )}
+                {room.phase !== 'finished' && (
+                  <button type="button" onClick={onStopClass} className="shrink-0 px-2.5 py-2 rounded-xl bg-rose-600 text-white text-xs font-extrabold" title="Hentikan Sementara">
+                    ⏹️
+                  </button>
+                )}
+                <button type="button" onClick={onOpenLiveBoard2D} className="shrink-0 px-2.5 py-2 rounded-xl bg-indigo-500/25 border border-indigo-400/45 text-indigo-100 text-xs font-extrabold">
                   🗺️ 2D
                 </button>
-                <button onClick={onOpenSoundboard} className="shrink-0 px-2.5 py-2 rounded-xl bg-pink-500/20 border border-pink-400/40 text-pink-200 text-xs font-extrabold">
+                <button type="button" onClick={onOpenSoundboard} className="shrink-0 px-2.5 py-2 rounded-xl bg-pink-500/20 border border-pink-400/40 text-pink-200 text-xs font-extrabold">
                   🎹
                 </button>
-                <button onClick={() => onOpenHudDrawer('players')} className="shrink-0 px-2.5 py-2 rounded-xl bg-sky-500/20 border border-sky-400/40 text-sky-200 text-xs font-extrabold">
+                <button type="button" onClick={() => onOpenHudDrawer('players')} className="shrink-0 px-2.5 py-2 rounded-xl bg-sky-500/20 border border-sky-400/40 text-sky-200 text-xs font-extrabold">
                   👥 {students.length}
                 </button>
-                <button onClick={() => onOpenHudDrawer('chat')} className="shrink-0 px-2.5 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold">
+                <button type="button" onClick={() => onOpenHudDrawer('chat')} className="shrink-0 px-2.5 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold">
                   💬
                 </button>
                 <button
+                  type="button"
                   onClick={() => setShowMobileTeacherTools(s => !s)}
                   className={`shrink-0 px-3 py-2 rounded-xl border text-xs font-extrabold ${showMobileTeacherTools ? 'bg-amber-400 text-slate-950 border-amber-300' : 'bg-slate-800 border-slate-700 text-slate-100'}`}
                 >
@@ -337,53 +449,69 @@ export default function GameHUD({
               <div className="hidden lg:flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   {room.phase === 'waiting' ? (
-                    <button onClick={onStartClass} className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 text-sm font-extrabold shadow-lg transition">
+                    <button type="button" onClick={onStartClass} className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 text-sm font-extrabold shadow-lg transition">
                       ▶️ Mulai Kelas
                     </button>
+                  ) : room.phase === 'finished' ? (
+                    <button type="button" onClick={handleRestartClick} className={`px-4 py-2.5 rounded-2xl text-sm font-extrabold shadow-lg transition ${confirmRestart ? 'bg-amber-400 text-slate-950 animate-pulse' : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950'}`}>
+                      {confirmRestart ? '❓ Klik Lagi untuk Mulai Ulang' : '🔄 Mulai Ulang'}
+                    </button>
                   ) : (
-                    <button onClick={onPauseClass} className="px-4 py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-sm font-extrabold shadow-lg transition">
+                    <button type="button" onClick={onPauseClass} className="px-4 py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-sm font-extrabold shadow-lg transition">
                       {room.phase === 'playing' ? '⏸️ Jeda' : '▶️ Lanjutkan'}
                     </button>
                   )}
-                  <button onClick={onStopClass} className="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-extrabold shadow-lg transition">
-                    ⏹️ Hentikan
-                  </button>
-                  <button onClick={onOpenTeacherDemo} className="px-3.5 py-2.5 rounded-2xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-extrabold shadow-lg transition">
+                  {room.phase !== 'finished' && (
+                    <button type="button" onClick={onStopClass} className="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-extrabold shadow-lg transition">
+                      ⏹️ Hentikan
+                    </button>
+                  )}
+                  {room.phase !== 'waiting' && room.phase !== 'finished' && (
+                    <button
+                      type="button"
+                      onClick={handleRestartClick}
+                      className={`px-3.5 py-2.5 rounded-2xl border text-xs font-extrabold shadow-lg transition ${confirmRestart ? 'bg-amber-400 text-slate-950 border-amber-200 animate-pulse' : 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/40 text-emerald-200'}`}
+                      title="Kembalikan semua bidak ke Petak 1 dan mulai ronde baru"
+                    >
+                      {confirmRestart ? '❓ Yakin Mulai Ulang?' : '🔄 Mulai Ulang'}
+                    </button>
+                  )}
+                  <button type="button" onClick={onOpenTeacherDemo} className="px-3.5 py-2.5 rounded-2xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-extrabold shadow-lg transition">
                     🎮 Demo Permainan
                   </button>
-                  <button onClick={onOpenSoundboard} className="px-3.5 py-2.5 rounded-2xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-extrabold shadow-lg transition flex items-center gap-1.5">
+                  <button type="button" onClick={onOpenSoundboard} className="px-3.5 py-2.5 rounded-2xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-extrabold shadow-lg transition flex items-center gap-1.5">
                     🎹 <span>Soundboard</span>
                   </button>
-                  <button onClick={onOpenAiStudio} className="px-3.5 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold shadow-lg transition">
+                  <button type="button" onClick={onOpenAiStudio} className="px-3.5 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold shadow-lg transition">
                     ✨ Soal & AI
                   </button>
-                  <button onClick={() => onOpenHudDrawer('teacher')} className="px-3.5 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 text-xs font-extrabold transition">
+                  <button type="button" onClick={() => onOpenHudDrawer('teacher')} className="px-3.5 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 text-xs font-extrabold transition">
                     📚 Ubah Mapel & Materi
                   </button>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  <button onClick={onCycleThemeMode} className="px-3 py-2.5 rounded-2xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-purple-200 text-xs font-extrabold transition">
-                    🐍 Ular & Tangga
+                  <button type="button" onClick={onCycleThemeMode} className="px-3 py-2.5 rounded-2xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-purple-200 text-xs font-extrabold transition">
+                    {themeLabel}
                   </button>
-                  <button onClick={onOpenSnakeCustomizer} className="px-3 py-2.5 rounded-2xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-extrabold transition flex items-center gap-1.5">
-                    <span className="w-3 h-3 rounded-full border border-white/80 inline-block bg-emerald-600"></span>
+                  <button type="button" onClick={onOpenSnakeCustomizer} className="px-3 py-2.5 rounded-2xl bg-pink-500/20 hover:bg-pink-500/30 border border-pink-400/40 text-pink-200 text-xs font-extrabold transition flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full border border-white/80 inline-block" style={{ background: snakeSwatch }}></span>
                     <span>🎨 Warna Ular</span>
                   </button>
-                  <button onClick={onOpenBoardTheme} className="px-3 py-2.5 rounded-2xl bg-amber-600/25 hover:bg-amber-600/35 border border-amber-400/45 text-amber-100 text-xs font-extrabold transition flex items-center gap-1.5">
+                  <button type="button" onClick={onOpenBoardTheme} className="px-3 py-2.5 rounded-2xl bg-amber-600/25 hover:bg-amber-600/35 border border-amber-400/45 text-amber-100 text-xs font-extrabold transition flex items-center gap-1.5">
                     <span>🌈</span>
                     <span>Warna Papan</span>
                   </button>
-                  <button onClick={onCycleElevation} className="px-3 py-2.5 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-extrabold transition">
-                    🧱 Baris Variatif
+                  <button type="button" onClick={onCycleElevation} className="px-3 py-2.5 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-extrabold transition">
+                    {elevationLabel}
                   </button>
-                  <button onClick={onOpenChangePin} className="px-3 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-extrabold transition">
+                  <button type="button" onClick={onOpenChangePin} className="px-3 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-extrabold transition">
                     🔑 Ubah PIN
                   </button>
-                  <button onClick={() => onOpenHudDrawer('chat')} className="px-3 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-extrabold transition">
+                  <button type="button" onClick={() => onOpenHudDrawer('chat')} className="px-3 py-2.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-extrabold transition">
                     💬 Chat
                   </button>
-                  <button onClick={onEndClassPodium} className="px-3 py-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-200 text-xs font-extrabold transition">
+                  <button type="button" onClick={onEndClassPodium} className="px-3 py-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-200 text-xs font-extrabold transition">
                     🏁 Podium
                   </button>
                 </div>
@@ -411,35 +539,34 @@ export default function GameHUD({
               {/* Tombol Utama Jawab Soal */}
               <div className="flex-1 min-w-0 flex flex-col items-center">
                 <button
-                  disabled={isAnimatingMove || room.phase !== 'playing'}
+                  type="button"
+                  disabled={isAnimatingMove || room.phase !== 'playing' || isPlayerFinished}
                   onClick={onOpenQuizModal}
-                  className="w-full max-w-sm py-2.5 sm:py-3.5 px-3 sm:px-6 rounded-xl sm:rounded-2xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 hover:from-indigo-400 hover:to-pink-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-display font-extrabold text-xs sm:text-base shadow-xl shadow-indigo-500/30 transition transform active:scale-[0.98] truncate"
+                  className={`w-full max-w-sm py-2.5 sm:py-3.5 px-3 sm:px-6 rounded-xl sm:rounded-2xl font-display font-extrabold text-xs sm:text-base shadow-xl transition transform active:scale-[0.98] truncate ${
+                    isPlayerFinished
+                      ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 shadow-emerald-500/25 cursor-default'
+                      : 'bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 hover:from-indigo-400 hover:to-pink-400 disabled:opacity-50 disabled:cursor-not-allowed text-white shadow-indigo-500/30'
+                  }`}
                 >
-                  {room.phase === 'waiting'
-                    ? '⏳ Tunggu Guru...'
-                    : room.phase === 'paused'
-                    ? '⏸️ Dijeda Guru'
-                    : isAnimatingMove
-                    ? '🏃 Melangkah...'
-                    : '🧠 Jawab Soal (∞)'}
+                  {studentButtonLabel}
                 </button>
-                <span className="hidden sm:inline text-[11px] text-slate-300 mt-1">
-                  {room.phase === 'waiting' ? 'Guru sedang menyiapkan kelas. Bersiaplah!' : room.phase === 'paused' ? 'Tunggu Guru menekan tombol Lanjutkan.' : 'Jawab soal benar untuk melangkah maju di papan 3D!'}
+                <span className="hidden sm:inline text-[11px] text-slate-300 mt-1 text-center">
+                  {studentHintLabel}
                 </span>
               </div>
 
               {/* Aksi Sekunder */}
               <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-                <button onClick={onOpenLiveBoard2D} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/40 text-indigo-100 text-xs font-extrabold transition" title="Papan 2D">
+                <button type="button" onClick={onOpenLiveBoard2D} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/40 text-indigo-100 text-xs font-extrabold transition" title="Papan 2D">
                   🗺️<span className="hidden md:inline"> 2D</span>
                 </button>
-                <button onClick={() => onOpenHudDrawer('rank')} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-extrabold transition" title="Peringkat">
+                <button type="button" onClick={() => onOpenHudDrawer('rank')} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-extrabold transition" title="Peringkat">
                   🏆<span className="hidden md:inline"> Peringkat</span>
                 </button>
-                <button onClick={() => onOpenHudDrawer('players')} className="hidden sm:inline-flex px-3 py-2.5 rounded-2xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-extrabold transition">
+                <button type="button" onClick={() => onOpenHudDrawer('players')} className="hidden sm:inline-flex px-3 py-2.5 rounded-2xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-extrabold transition">
                   👥<span className="hidden md:inline"> Pemain</span>
                 </button>
-                <button onClick={() => onOpenHudDrawer('chat')} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold transition" title="Chat">
+                <button type="button" onClick={() => onOpenHudDrawer('chat')} className="px-2 sm:px-3 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold transition" title="Chat">
                   💬<span className="hidden md:inline"> Chat</span>
                 </button>
               </div>
@@ -449,6 +576,7 @@ export default function GameHUD({
       ) : (
         <div className="w-full flex justify-center pointer-events-auto pb-1">
           <button
+            type="button"
             onClick={() => setHudMinimized(false)}
             className="px-4 py-2 rounded-full glass-panel-strong border border-amber-400/50 text-amber-200 text-xs font-extrabold shadow-xl"
           >

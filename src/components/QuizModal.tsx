@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { QuestionItem } from '../types';
 
 interface QuizModalProps {
@@ -24,6 +24,12 @@ export default function QuizModal({
   const [answered, setAnswered] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
 
+  useEffect(() => {
+    setSelectedIdx(null);
+    setAnswered(false);
+    setIsCorrect(false);
+  }, [isOpen, question?.id]);
+
   if (!isOpen || !question) return null;
 
   const handleSelectOption = (idx: number) => {
@@ -48,7 +54,7 @@ export default function QuizModal({
       <div className="w-full max-w-xl glass-panel-strong rounded-3xl border border-indigo-400/40 shadow-2xl overflow-hidden">
         <div className="p-4 sm:p-5 bg-gradient-to-r from-indigo-950/90 to-purple-950/90 border-b border-indigo-400/25 flex items-center justify-between gap-2">
           <span className="px-3 py-1 rounded-full bg-indigo-500/25 border border-indigo-400/40 text-indigo-200 text-xs font-extrabold">
-            {isDemo ? '🎮 DEMO GURU • ' : ''}{grade} • {subject}
+            {isDemo ? '🎮 DEMO GURU • ' : ''}{question.grade || grade} • {question.subject || subject}{question.topic ? ` • ${question.topic}` : ''}
           </span>
           <div className="flex items-center gap-2">
             <span className="px-3 py-1 rounded-full bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-extrabold">

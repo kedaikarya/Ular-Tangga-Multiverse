@@ -114,7 +114,7 @@ service cloud.firestore {
 
     function isValidRoomPlayer(data, playerId, roomCode) {
       return data.keys().hasAll(['id', 'roomCode', 'uid', 'name', 'avatar', 'color', 'role', 'isDemo', 'position', 'score', 'correctCount', 'answeredCount', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'roomCode', 'uid', 'name', 'avatar', 'color', 'role', 'isDemo', 'position', 'score', 'correctCount', 'answeredCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'roomCode', 'uid', 'name', 'avatar', 'color', 'role', 'isDemo', 'position', 'score', 'correctCount', 'answeredCount', 'finishOrder', 'createdAt', 'updatedAt'])
         && data.id == playerId
         && data.roomCode == roomCode
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
@@ -127,6 +127,7 @@ service cloud.firestore {
         && data.score is int && data.score >= 0
         && data.correctCount is int && data.correctCount >= 0
         && data.answeredCount is int && data.answeredCount >= 0
+        && (!('finishOrder' in data) || (data.finishOrder is int && data.finishOrder >= 0 && data.finishOrder <= 1000))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -230,14 +231,11 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          isAdmin() || (
-            existing().phase != 'finished' && (
-              // Tier 1: Host updates settings, theme, phase, or soundboard
-              (existing().hostId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['grade', 'subject', 'topic', 'themeMode', 'elevationStyle', 'boardTheme', 'snakeStyle', 'phase', 'soundboardTrigger', 'updatedAt'])) ||
-              // Tier 2: Joined student winning the game transitions phase to finished
-              (isRoomMember(roomCode) && existing().phase == 'playing' && incoming().phase == 'finished' && incoming().diff(existing()).affectedKeys().hasOnly(['phase', 'updatedAt']))
-            )
-          )
+          isAdmin() ||
+          // Tier 1: Host updates active room settings, theme, phase, or soundboard
+          (existing().phase != 'finished' && existing().hostId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['grade', 'subject', 'topic', 'themeMode', 'elevationStyle', 'boardTheme', 'snakeStyle', 'phase', 'soundboardTrigger', 'updatedAt'])) ||
+          // Tier 2: Host restarts a finished session back to playing/waiting
+          (existing().phase == 'finished' && existing().hostId == request.auth.uid && incoming().phase in ['playing', 'waiting'] && incoming().diff(existing()).affectedKeys().hasOnly(['phase', 'updatedAt']))
         );
 
       allow delete: if isSignedIn() && isValidRoomCode(roomCode) && (existing().hostId == request.auth.uid || isAdmin());
@@ -268,12 +266,20 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (
-            isAdmin() || (
-              roomDoc(roomCode).data.phase != 'finished' && (
-                (existing().uid == request.auth.uid && existing().isDemo == false && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'color', 'position', 'score', 'correctCount', 'answeredCount', 'updatedAt'])) ||
-                (isRoomHost(roomCode) && existing().isDemo == true && incoming().diff(existing()).affectedKeys().hasOnly(['position', 'score', 'correctCount', 'answeredCount', 'updatedAt']))
-              )
-            )
+            isAdmin() ||
+            // Action: Host resets any participant's round state to start (Mulai Ulang)
+            (isRoomHost(roomCode)
+              && incoming().position == 1
+              && incoming().score == 0
+              && incoming().correctCount == 0
+              && incoming().answeredCount == 0
+              && (!('finishOrder' in incoming()) || incoming().finishOrder == 0)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['position', 'score', 'correctCount', 'answeredCount', 'finishOrder', 'updatedAt'])) ||
+            // Action: Active round updates for self or host demo pawns
+            (roomDoc(roomCode).data.phase != 'finished' && (
+              (existing().uid == request.auth.uid && existing().isDemo == false && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'color', 'position', 'score', 'correctCount', 'answeredCount', 'finishOrder', 'updatedAt'])) ||
+              (isRoomHost(roomCode) && existing().isDemo == true && incoming().diff(existing()).affectedKeys().hasOnly(['position', 'score', 'correctCount', 'answeredCount', 'finishOrder', 'updatedAt']))
+            ))
           );
 
         allow delete: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId)

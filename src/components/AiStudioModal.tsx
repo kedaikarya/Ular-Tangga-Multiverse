@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { QuestionItem } from '../types';
+import { GRADE_OPTIONS, SUBJECT_OPTIONS } from '../constants';
 
 interface AiStudioModalProps {
   isOpen: boolean;
@@ -8,7 +9,8 @@ interface AiStudioModalProps {
   subject: string;
   topic: string;
   questions: QuestionItem[];
-  onGenerateAi: (grade: string, subject: string, topic: string) => void;
+  isGeneratingAi?: boolean;
+  onGenerateAi: (grade: string, subject: string, topic: string) => Promise<void> | void;
   onSaveQuestion: (q: QuestionItem, editId?: string) => void;
   onDeleteQuestion: (id: string) => void;
 }
@@ -20,12 +22,13 @@ export default function AiStudioModal({
   subject,
   topic,
   questions,
+  isGeneratingAi = false,
   onGenerateAi,
   onSaveQuestion,
   onDeleteQuestion
 }: AiStudioModalProps) {
   const [genGrade, setGenGrade] = useState(grade);
-  const [genSubject, setGenSubject] = useState(subject === 'Campuran' ? 'Matematika' : subject);
+  const [genSubject, setGenSubject] = useState(subject === 'Campuran' ? 'IPAS' : subject);
   const [genTopic, setGenTopic] = useState(topic);
 
   const [editId, setEditId] = useState<string | undefined>(undefined);
@@ -37,6 +40,13 @@ export default function AiStudioModal({
   const [correctIdx, setCorrectIdx] = useState(0);
   const [stepsVal, setStepsVal] = useState(3);
   const [expText, setExpText] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setGenGrade(grade || 'Fase C');
+    setGenSubject(subject === 'Campuran' ? 'IPAS' : subject || 'IPAS');
+    setGenTopic(topic || '');
+  }, [isOpen, grade, subject, topic]);
 
   if (!isOpen) return null;
 
@@ -81,46 +91,49 @@ export default function AiStudioModal({
     setExpText(q.explanation || '');
   };
 
+  const generatorSubjects = SUBJECT_OPTIONS.filter(s => s.value !== 'Campuran');
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
       <div className="w-full max-w-4xl glass-panel-strong rounded-3xl border border-indigo-400/40 shadow-2xl overflow-hidden my-auto max-h-[92dvh] flex flex-col">
         <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between">
           <div>
-            <h3 className="font-display text-base sm:text-lg font-extrabold text-white">✨ Studio Soal Guru & Generator AI</h3>
-            <p className="text-xs text-slate-400">Buat soal otomatis dengan AI atau edit soal secara manual. Sistem otomatis mengacak soal tanpa batas (∞).</p>
+            <h3 className="font-display text-base sm:text-lg font-extrabold text-white">✨ Studio Soal Guru & Generator Gemini AI</h3>
+            <p className="text-xs text-slate-400">Buat soal akurat sesuai Fase, Mapel, dan Materi menggunakan Gemini AI atau edit manual.</p>
           </div>
-          <button onClick={onClose} className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
+          <button type="button" onClick={onClose} className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold">✕</button>
         </div>
 
         <div className="p-4 sm:p-5 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 gap-5">
           <div className="lg:col-span-6 space-y-4">
             <div className="p-4 rounded-2xl bg-indigo-500/10 border border-indigo-400/30 space-y-3">
-              <div className="text-xs font-extrabold text-indigo-200">🤖 Generator Soal Otomatis (AI)</div>
+              <div className="text-xs font-extrabold text-indigo-200">🤖 Generator Soal Otomatis (Gemini AI)</div>
               <div className="grid grid-cols-2 gap-2">
                 <select value={genGrade} onChange={(e) => setGenGrade(e.target.value)} className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs font-bold text-white">
-                  <option value="Fase A">Fase A (Kelas 1–2 SD)</option>
-                  <option value="Fase B">Fase B (Kelas 3–4 SD)</option>
-                  <option value="Fase C">Fase C (Kelas 5–6 SD)</option>
-                  <option value="Fase D">Fase D (Kelas 7–9 SMP)</option>
+                  {GRADE_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
                 <select value={genSubject} onChange={(e) => setGenSubject(e.target.value)} className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs font-bold text-white">
-                  <option value="Matematika">Matematika</option>
-                  <option value="Bahasa Indonesia">Bahasa Indonesia</option>
-                  <option value="IPA">IPA</option>
-                  <option value="IPS">IPS</option>
-                  <option value="PPKn">PPKn</option>
-                  <option value="Bahasa Inggris">Bahasa Inggris</option>
+                  {generatorSubjects.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
               </div>
               <input
                 type="text"
                 value={genTopic}
                 onChange={(e) => setGenTopic(e.target.value)}
-                placeholder="Materi spesifik (misal: Pecahan, Tata Surya)..."
+                placeholder="Materi spesifik (misal: Rantai Makanan, Pecahan, Tata Surya)..."
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs font-bold text-white"
               />
-              <button type="button" onClick={() => onGenerateAi(genGrade, genSubject, genTopic)} className="w-full py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 text-white text-xs font-extrabold shadow-lg">
-                ✨ Generate 5 Soal AI Sekarang
+              <button
+                type="button"
+                disabled={isGeneratingAi}
+                onClick={() => onGenerateAi(genGrade, genSubject, genTopic)}
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 disabled:opacity-50 disabled:cursor-wait text-white text-xs font-extrabold shadow-lg"
+              >
+                {isGeneratingAi ? '⏳ Gemini AI sedang menyusun 5 soal...' : '✨ Generate 5 Soal Gemini AI Sekarang'}
               </button>
             </div>
 
@@ -173,6 +186,9 @@ export default function AiStudioModal({
             <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
               {questions.map((q, idx) => (
                 <div key={q.id || idx} className="p-3 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between gap-2 text-[10px] text-indigo-300 font-bold">
+                    <span>{q.grade} • {q.subject} • {q.topic}</span>
+                  </div>
                   <div className="flex items-start justify-between gap-2">
                     <span className="font-bold text-white">{idx + 1}. {q.question}</span>
                     <div className="flex items-center gap-1 shrink-0">
