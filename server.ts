@@ -259,7 +259,7 @@ async function startServer() {
   });
 
   // Vite middleware in development, static files in production
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -274,10 +274,16 @@ async function startServer() {
     });
   }
 
-  const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${port}`);
-  });
+  if (!process.env.VERCEL) {
+    const port = Number(process.env.PORT) || 3000;
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`Server listening on http://0.0.0.0:${port}`);
+    });
+  }
+
+  return app;
 }
 
-startServer();
+const appPromise = startServer();
+export default appPromise;
+

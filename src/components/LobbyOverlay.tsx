@@ -15,6 +15,10 @@ interface LobbyOverlayProps {
   musicStyle: string;
   onCycleMusicStyle: () => void;
   onDeleteRoom: (code: string) => void;
+  authUser: { uid: string; displayName: string | null; email: string | null } | null;
+  authReady: boolean;
+  onGoogleSignIn: () => void;
+  onGoogleSignOut: () => void;
 }
 
 export default function LobbyOverlay({
@@ -29,7 +33,11 @@ export default function LobbyOverlay({
   onToggleMusic,
   musicStyle,
   onCycleMusicStyle,
-  onDeleteRoom
+  onDeleteRoom,
+  authUser,
+  authReady,
+  onGoogleSignIn,
+  onGoogleSignOut
 }: LobbyOverlayProps) {
   const [studentNameInput, setStudentNameInput] = useState(userProfile.name === 'Siswa Pintar' ? '' : userProfile.name);
   const [joinCodeInput, setJoinCodeInput] = useState('');
@@ -104,8 +112,48 @@ export default function LobbyOverlay({
           <button onClick={toggleNativeFullscreen} className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold transition" title="Layar Penuh">
             ⛶
           </button>
+          {authReady && (
+            authUser ? (
+              <button
+                type="button"
+                onClick={onGoogleSignOut}
+                className="px-2.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold transition flex items-center gap-1.5"
+                title={`Terhubung sebagai ${authUser.email || authUser.displayName || 'Google'}. Klik untuk keluar.`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span className="max-w-[90px] truncate">{authUser.displayName?.split(' ')[0] || 'Cloud ON'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onGoogleSignIn}
+                className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-extrabold transition shadow flex items-center gap-1.5"
+              >
+                <span>🔐</span>
+                <span>Login Google</span>
+              </button>
+            )
+          )}
         </div>
       </header>
+
+      {authReady && !authUser && (
+        <div className="w-full max-w-6xl mx-auto mt-3 glass-panel-strong rounded-2xl px-4 py-2.5 border border-sky-400/40 flex flex-wrap items-center justify-between gap-2 shadow-xl">
+          <div className="flex items-center gap-2 text-xs text-sky-100">
+            <span>☁️</span>
+            <span>
+              <strong>Mode Sinkronisasi Cloud:</strong> Masuk dengan Google agar kelas & papan 3D tersinkronisasi real-time antar HP.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onGoogleSignIn}
+            className="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold transition shrink-0"
+          >
+            🔐 Masuk dengan Google
+          </button>
+        </div>
+      )}
 
       {/* Konten Tengah */}
       <main className="w-full max-w-6xl mx-auto my-auto py-4 grid grid-cols-1 lg:grid-cols-12 gap-4">

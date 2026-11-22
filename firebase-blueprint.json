@@ -1,0 +1,160 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Profil pengguna terautentikasi dan statistik belajar global",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "avatar": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "color": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "totalScore": { "type": "integer" },
+        "totalAnswered": { "type": "integer" },
+        "totalCorrect": { "type": "integer" },
+        "gamesWon": { "type": "integer" },
+        "subjectStats": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "avatar", "color", "totalScore", "totalAnswered", "totalCorrect", "gamesWon", "updatedAt"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Ruang kelas permainan Ular Tangga Edukasi 3D real-time",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "themeMode": { "type": "string", "enum": ["classic", "modern"] },
+        "elevationStyle": { "type": "string", "enum": ["stepped", "terraced", "pyramid"] },
+        "boardTheme": { "type": "string", "enum": ["rainbow", "wood", "grayscale", "bamboo", "marble"] },
+        "snakeStyle": { "type": "object" },
+        "phase": { "type": "string", "enum": ["waiting", "playing", "paused", "stopped", "finished"] },
+        "hostId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "soundboardTrigger": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name", "grade", "subject", "topic", "themeMode", "elevationStyle", "boardTheme", "snakeStyle", "phase", "hostId", "createdAt", "updatedAt"]
+    },
+    "RoomPlayer": {
+      "title": "RoomPlayer",
+      "description": "Bidak siswa/guru atau bidak demo dalam ruang kelas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "avatar": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "color": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "role": { "type": "string", "enum": ["teacher", "student"] },
+        "isDemo": { "type": "boolean" },
+        "position": { "type": "integer" },
+        "score": { "type": "integer" },
+        "correctCount": { "type": "integer" },
+        "answeredCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomCode", "uid", "name", "avatar", "color", "role", "isDemo", "position", "score", "correctCount", "answeredCount", "createdAt", "updatedAt"]
+    },
+    "RoomQuestion": {
+      "title": "RoomQuestion",
+      "description": "Soal kuis dalam kelas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9_\\-]+$" },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "question": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "options": { "type": "array" },
+        "correctIndex": { "type": "integer" },
+        "steps": { "type": "integer" },
+        "explanation": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomCode", "grade", "subject", "topic", "question", "options", "correctIndex", "steps", "explanation", "createdAt"]
+    },
+    "RoomMessage": {
+      "title": "RoomMessage",
+      "description": "Pesan obrolan kelas real-time",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9_\\-]+$" },
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "avatar": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "isSystem": { "type": "boolean" },
+        "time": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomCode", "senderUid", "senderName", "avatar", "text", "isSystem", "time", "createdAt"]
+    },
+    "RoomActivityLog": {
+      "title": "RoomActivityLog",
+      "description": "Log langkah dan aktivitas pemain real-time",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomCode": { "type": "string", "minLength": 4, "maxLength": 16, "pattern": "^[A-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "time": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomCode", "uid", "text", "time", "createdAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Peringkat skor global pemain",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "avatar": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "score": { "type": "integer" },
+        "wins": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "avatar", "score", "wins", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Profil pengguna pribadi milik user terautentikasi"
+    },
+    "/rooms/{roomCode}": {
+      "schema": { "$ref": "#/entities/Room" },
+      "description": "Metadata dan pengaturan kelas real-time"
+    },
+    "/rooms/{roomCode}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/RoomPlayer" },
+      "description": "Daftar bidak peserta dan posisi petak real-time dalam kelas"
+    },
+    "/rooms/{roomCode}/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/RoomQuestion" },
+      "description": "Bank soal khusus dalam ruang kelas"
+    },
+    "/rooms/{roomCode}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/RoomMessage" },
+      "description": "Obrolan real-time dalam ruang kelas"
+    },
+    "/rooms/{roomCode}/activityLog/{logId}": {
+      "schema": { "$ref": "#/entities/RoomActivityLog" },
+      "description": "Log aktivitas langkah pemain dalam ruang kelas"
+    },
+    "/leaderboard/{entryId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Skor dan kemenangan global pemain"
+    }
+  }
+}

@@ -4,6 +4,26 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, signInWithGoogle, signOutFirebase } from './firebase';
+import {
+  addActivityLogInFirestore,
+  addChatMessageInFirestore,
+  clearDemoPlayersInFirestore,
+  createRoomInFirestore,
+  deleteQuestionInFirestore,
+  deleteRoomInFirestore,
+  fetchGlobalLeaderboardFromFirestore,
+  fetchRoomFromFirestore,
+  joinRoomInFirestore,
+  saveQuestionInFirestore,
+  subscribeToRoomRealtime,
+  subscribeToTeacherRooms,
+  syncUserProfileToFirestore,
+  triggerSoundboardInFirestore,
+  updateRoomMetaInFirestore,
+  upsertPlayerInFirestore
+} from './services/firestoreRooms';
 import { PlayerProfile, RoomData, QuestionItem } from './types';
 import { STORAGE_KEYS, DEFAULT_TEACHER_PIN, PAWN_COLORS, SEED_QUESTION_BANK, LADDERS, SNAKES } from './constants';
 import { playSoundEffect, startBackgroundMusic, stopAndDisposeBackgroundMusic } from './utils/audio';
@@ -47,6 +67,9 @@ export default function App() {
     };
   });
 
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [cloudLeaderboard, setCloudLeaderboard] = useState<Array<{ id: string; name: string; avatar: string; score: number; wins: number }>>([]);
   const [openRooms, setOpenRooms] = useState<Record<string, RoomData>>({});
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<'teacher' | 'student'>('student');
@@ -109,7 +132,9 @@ export default function App() {
   const studentAskedHistoryRef = useRef<Record<string, Set<string>>>({});
   const simIntervalRef = useRef<any>(null);
 
-  // Refs to prevent stale closures inside SSE callbacks & intervals
+  // Refs to prevent stale closures inside SSE/Firestore callbacks & intervals
+  const firebaseUserRef = useRef<User | null>(null);
+  firebaseUserRef.current = firebaseUser;
   const openRoomsRef = useRef(openRooms);
   openRoomsRef.current = openRooms;
   const currentRoomIdRef = useRef(currentRoomId);
@@ -124,7 +149,11 @@ export default function App() {
   hasStreakShieldRef.current = hasStreakShield;
   const isSimRunningRef = useRef(isSimRunning);
   isSimRunningRef.current = isSimRunning;
+  const isAnimatingMoveRef = useRef(isAnimatingMove);
+  isAnimatingMoveRef.current = isAnimatingMove;
   const prevPhaseRef = useRef<string | null>(null);
+  const lastSoundboardTsRef = useRef<number>(0);
+  const hasSeenInitialMetaRef = useRef<boolean>(false);
 
   const cloneRoom = (room: RoomData): RoomData => ({
     ...room,
@@ -134,7 +163,7 @@ export default function App() {
     questions: [...(room.questions || [])]
   });
 
-  const syncVisualsFromRoom = (room: RoomData) => {
+  const syncVisualsFromRoom = (room: Partial<RoomData>) => {
     if (room.themeMode) setVisualThemeMode(room.themeMode);
     if (room.snakeStyle) setSnakeStyleConfig(room.snakeStyle);
     if (room.boardTheme) setBoardColorTheme(room.boardTheme);
@@ -146,6 +175,62 @@ export default function App() {
       localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(userProfile));
     } catch (_) {}
   }, [userProfile]);
+
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+      if (user) {
+        const cur = userProfileRef.current;
+        const resolvedName =
+          cur.name === 'Siswa Pintar' && user.displayName
+            ? user.displayName.slice(0, 40)
+            : cur.name;
+        const updatedProfile: PlayerProfile = {
+          ...cur,
+          id: user.uid,
+          name: resolvedName
+        };
+        if (cur.id !== user.uid || cur.name !== resolvedName) {
+          setUserProfile(updatedProfile);
+        }
+        try {
+          await syncUserProfileToFirestore(user.uid, updatedProfile);
+          const lb = await fetchGlobalLeaderboardFromFirestore();
+          setCloudLeaderboard(lb);
+        } catch (err) {
+          console.error('Auth sync error:', err);
+        }
+      } else {
+        setCloudLeaderboard([]);
+      }
+    });
+    return () => unsubAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !firebaseUser) return;
+    const unsub = subscribeToTeacherRooms(firebaseUser.uid, (rooms) => {
+      setOpenRooms(prev => {
+        const next: Record<string, RoomData> = { ...prev };
+        rooms.forEach(r => {
+          const existing = next[r.code];
+          next[r.code] = existing
+            ? {
+                ...r,
+                players: existing.players || {},
+                questions: existing.questions || [],
+                messages: existing.messages || [],
+                activityLog: existing.activityLog || []
+              }
+            : r;
+        });
+        try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
+        return next;
+      });
+    });
+    return () => unsub();
+  }, [authReady, firebaseUser?.uid]);
 
   useEffect(() => {
     try {
@@ -249,9 +334,122 @@ export default function App() {
     };
   }, []);
 
-  // Real-time SSE subscription for the active classroom across smartphones & desktop
+  // Real-time subscription (Firebase Firestore when signed in, Express SSE fallback when offline/local)
   useEffect(() => {
-    if (!currentRoomId || typeof EventSource === 'undefined') {
+    if (!currentRoomId) {
+      prevPhaseRef.current = null;
+      return;
+    }
+
+    const fbUser = firebaseUser;
+    if (authReady && fbUser) {
+      hasSeenInitialMetaRef.current = false;
+      lastSoundboardTsRef.current = 0;
+
+      const makeBaseRoom = (code: string): RoomData => ({
+        code,
+        name: 'Kelas Edukasi',
+        grade: 'Fase C',
+        subject: 'Matematika',
+        topic: 'Umum',
+        themeMode: 'classic',
+        elevationStyle: 'stepped',
+        boardTheme: 'rainbow',
+        snakeStyle: { colorPreset: 'green', customHex: '#ffffff', patternPreset: 'diamond' },
+        phase: 'waiting',
+        hostId: '',
+        questions: [],
+        players: {},
+        messages: [],
+        activityLog: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
+
+      const unsub = subscribeToRoomRealtime(currentRoomId, {
+        onRoomMeta: (meta, soundboard) => {
+          setOpenRooms(prev => {
+            const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
+            const merged = { ...base, ...meta };
+            const next = { ...prev, [currentRoomId]: merged };
+            try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
+            return next;
+          });
+          syncVisualsFromRoom(meta);
+
+          if (!hasSeenInitialMetaRef.current) {
+            hasSeenInitialMetaRef.current = true;
+            if (soundboard) {
+              lastSoundboardTsRef.current = soundboard.triggeredAtMs;
+            }
+          } else if (soundboard && soundboard.triggeredAtMs !== lastSoundboardTsRef.current) {
+            lastSoundboardTsRef.current = soundboard.triggeredAtMs;
+            if (soundboard.senderId !== fbUser.uid) {
+              playSoundEffect(soundboard.soundKey, soundEnabledRef.current);
+              showToast(`🎹 Guru: ${soundboard.soundLabel || soundboard.soundKey}!`, 'success');
+            }
+          }
+
+          if (meta.phase === 'finished' && prevPhaseRef.current && prevPhaseRef.current !== 'finished') {
+            setIsWinnerModalOpen(true);
+          }
+          if (meta.phase) {
+            prevPhaseRef.current = meta.phase;
+          }
+        },
+        onRoomDeleted: () => {
+          setOpenRooms(prev => {
+            const next = { ...prev };
+            delete next[currentRoomId];
+            try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
+            return next;
+          });
+          showToast('Kelas telah ditutup oleh Guru.', 'warning');
+          handleLeaveRoom();
+        },
+        onPlayers: (players) => {
+          setOpenRooms(prev => {
+            const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
+            const mergedPlayers = { ...players };
+            const myId = userProfileRef.current.id;
+            if (isAnimatingMoveRef.current && base.players?.[myId] && mergedPlayers[myId]) {
+              mergedPlayers[myId] = {
+                ...mergedPlayers[myId],
+                position: base.players[myId].position
+              };
+            }
+            const next = { ...prev, [currentRoomId]: { ...base, players: mergedPlayers } };
+            try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
+            return next;
+          });
+        },
+        onQuestions: (questions) => {
+          setOpenRooms(prev => {
+            const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
+            const next = { ...prev, [currentRoomId]: { ...base, questions } };
+            return next;
+          });
+        },
+        onMessages: (messages) => {
+          setOpenRooms(prev => {
+            const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
+            const next = { ...prev, [currentRoomId]: { ...base, messages } };
+            return next;
+          });
+        },
+        onActivityLog: (activityLog) => {
+          setOpenRooms(prev => {
+            const base = prev[currentRoomId] || makeBaseRoom(currentRoomId);
+            const next = { ...prev, [currentRoomId]: { ...base, activityLog } };
+            return next;
+          });
+        }
+      });
+
+      return () => unsub();
+    }
+
+    if (typeof EventSource === 'undefined') {
       prevPhaseRef.current = null;
       return;
     }
@@ -296,7 +494,7 @@ export default function App() {
     return () => {
       es.close();
     };
-  }, [currentRoomId]);
+  }, [currentRoomId, authReady, firebaseUser?.uid]);
 
   const showToast = (message: string, type = 'info') => {
     const id = 't_' + Math.random().toString(36).substring(2, 8);
@@ -385,8 +583,38 @@ export default function App() {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    try {
+      await signInWithGoogle();
+      showToast('Berhasil masuk dengan Google! Sinkronisasi Cloud aktif.', 'success');
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/popup-closed-by-user') {
+        showToast('Login Google dibatalkan.', 'info');
+      } else if (code === 'auth/popup-blocked') {
+        showToast('Popup login diblokir browser. Izinkan popup lalu coba lagi.', 'warning');
+      } else if (code === 'auth/unauthorized-domain') {
+        showToast('Domain belum terdaftar di Firebase Auth Authorized Domains.', 'error');
+      } else {
+        showToast('Gagal masuk Google. Coba lagi sebentar.', 'error');
+      }
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    try {
+      if (currentRoomIdRef.current) {
+        handleLeaveRoom();
+      }
+      await signOutFirebase();
+      showToast('Keluar dari akun Google.', 'info');
+    } catch (_) {
+      showToast('Gagal keluar dari akun Google.', 'error');
+    }
+  };
+
   // --- ROOM MANAGEMENT ---
-  const handleCreateClass = (config: {
+  const handleCreateClass = async (config: {
     className: string;
     grade: string;
     subject: string;
@@ -405,6 +633,9 @@ export default function App() {
       questions = [...buildAiQuestionsForTopic(config.grade, config.subject, config.topic), ...questions];
     }
 
+    const fbUser = firebaseUserRef.current;
+    const hostUid = fbUser ? fbUser.uid : userProfile.id;
+
     const newRoom: RoomData = {
       code,
       name: config.className,
@@ -416,11 +647,11 @@ export default function App() {
       boardTheme: boardColorTheme,
       snakeStyle: { ...snakeStyleConfig },
       phase: 'waiting',
-      hostId: userProfile.id,
+      hostId: hostUid,
       questions,
       players: {
-        [userProfile.id]: {
-          id: userProfile.id,
+        [hostUid]: {
+          id: hostUid,
           name: 'Guru Pengajar',
           avatar: '👩‍🏫',
           color: '#f59e0b',
@@ -444,20 +675,50 @@ export default function App() {
     setCurrentRoomId(code);
     setCurrentUserRole('teacher');
     persistRoomChange(newRoom, 'ROOM_UPDATED', { skipServer: true });
-    fetch('/api/rooms', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: newRoom })
-    }).catch(() => {});
     setIsCreateModalOpen(false);
-    showToast(`Kelas ${code} siap! Bagikan kode kuning kepada siswa.`, 'success');
+
+    if (fbUser) {
+      try {
+        await createRoomInFirestore(newRoom, fbUser.uid);
+        showToast(`Kelas Cloud ${code} siap! Siswa dapat langsung bergabung dari HP mana saja.`, 'success');
+      } catch (err) {
+        console.error('Create room Firestore error:', err);
+        showToast('Gagal menyimpan kelas ke Cloud. Periksa koneksi internet Anda.', 'error');
+      }
+    } else {
+      fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room: newRoom })
+      }).catch(() => {});
+      showToast(`Kelas lokal ${code} siap! Login Google agar tersinkron ke semua HP di internet.`, 'info');
+    }
   };
 
   const handleJoinRoom = async (code: string, studentName?: string) => {
     const cleanCode = (code || '').trim().toUpperCase();
     if (!cleanCode) return;
 
+    const fbUser = firebaseUserRef.current;
     let room = openRoomsRef.current[cleanCode];
+
+    if (fbUser) {
+      try {
+        const cloudRoom = await fetchRoomFromFirestore(cleanCode);
+        if (cloudRoom) {
+          room = {
+            ...cloudRoom,
+            players: room?.players || {},
+            questions: room?.questions || [],
+            messages: room?.messages || [],
+            activityLog: room?.activityLog || []
+          };
+        }
+      } catch (err) {
+        console.error('Fetch Firestore room error:', err);
+      }
+    }
+
     if (!room) {
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(cleanCode)}`);
@@ -469,24 +730,34 @@ export default function App() {
     }
 
     if (!room) {
-      showToast(`Kelas dengan kode "${cleanCode}" tidak ditemukan.`, 'error');
+      if (!fbUser) {
+        showToast(`Kelas "${cleanCode}" tidak ditemukan. Klik "Login Google" jika bergabung dari HP/Vercel!`, 'warning');
+      } else {
+        showToast(`Kelas dengan kode "${cleanCode}" tidak ditemukan.`, 'error');
+      }
       return;
     }
 
     let prof = userProfileRef.current;
+    if (fbUser && prof.id !== fbUser.uid) {
+      prof = { ...prof, id: fbUser.uid };
+    }
     if (studentName && studentName !== prof.name) {
       prof = { ...prof, name: studentName };
+    }
+    if (prof !== userProfileRef.current) {
       setUserProfile(prof);
     }
 
     const draftRoom = cloneRoom(room);
     const alreadyInRoom = Boolean(draftRoom.players?.[prof.id]);
+    const isHost = Boolean(fbUser && draftRoom.hostId === fbUser.uid) || draftRoom.hostId === prof.id;
     const playerEntry = draftRoom.players[prof.id] || {
       id: prof.id,
-      name: prof.name,
-      avatar: prof.avatar || '🦊',
-      color: prof.color || PAWN_COLORS[Object.keys(draftRoom.players).length % PAWN_COLORS.length],
-      role: 'student' as const,
+      name: isHost ? 'Guru Pengajar' : prof.name,
+      avatar: isHost ? '👩‍🏫' : (prof.avatar || '🦊'),
+      color: isHost ? '#f59e0b' : (prof.color || PAWN_COLORS[Object.keys(draftRoom.players).length % PAWN_COLORS.length]),
+      role: (isHost ? 'teacher' : 'student') as 'teacher' | 'student',
       position: 1,
       score: 0,
       correctCount: 0,
@@ -494,7 +765,7 @@ export default function App() {
     };
 
     let joinChatMessage: any = null;
-    let joinActivityText = '';
+    let joinActivityText = `${prof.avatar || '🦊'} ${prof.name} bergabung ke kelas`;
     if (!alreadyInRoom) {
       draftRoom.players[prof.id] = playerEntry;
       joinChatMessage = {
@@ -506,30 +777,39 @@ export default function App() {
         time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
       };
       draftRoom.messages = [...(draftRoom.messages || []), joinChatMessage].slice(-50);
-      joinActivityText = `${prof.avatar} ${prof.name} bergabung ke kelas`;
       appendActivityLog(draftRoom, joinActivityText);
     }
 
     let syncedRoom = draftRoom;
-    try {
-      const joinRes = await fetch(`/api/rooms/${encodeURIComponent(cleanCode)}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          player: playerEntry,
-          chatMessage: joinChatMessage,
-          activityText: joinActivityText || undefined
-        })
-      });
-      if (joinRes.ok) {
-        const joinData = await joinRes.json();
-        if (joinData?.room) syncedRoom = joinData.room;
+    if (fbUser) {
+      try {
+        await joinRoomInFirestore(cleanCode, fbUser.uid, playerEntry, joinActivityText);
+      } catch (err) {
+        console.error('Join Firestore error:', err);
+        showToast('Gagal bergabung ke kelas Cloud.', 'error');
+        return;
       }
-    } catch (_) {}
+    } else {
+      try {
+        const joinRes = await fetch(`/api/rooms/${encodeURIComponent(cleanCode)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            player: playerEntry,
+            chatMessage: joinChatMessage,
+            activityText: !alreadyInRoom ? joinActivityText : undefined
+          })
+        });
+        if (joinRes.ok) {
+          const joinData = await joinRes.json();
+          if (joinData?.room) syncedRoom = joinData.room;
+        }
+      } catch (_) {}
+    }
 
     syncVisualsFromRoom(syncedRoom);
     setCurrentRoomId(cleanCode);
-    setCurrentUserRole('student');
+    setCurrentUserRole(isHost ? 'teacher' : 'student');
     setConsecutiveCorrectCount(0);
     setHasStreakShield(false);
 
@@ -743,7 +1023,16 @@ export default function App() {
       playSoundEffect('wrong', soundEnabled);
       const actText = `${player.avatar} ${player.name} menjawab kurang tepat`;
       appendActivityLog(room, actText);
-      persistRoomChange(room, 'ROOM_UPDATED', { playerUpdate: player, activityText: actText });
+      const fbUser = firebaseUserRef.current;
+      persistRoomChange(room, 'ROOM_UPDATED', { playerUpdate: player, activityText: actText, skipServer: Boolean(fbUser) });
+      if (fbUser) {
+        upsertPlayerInFirestore(room.code, fbUser.uid, player).catch(console.error);
+        addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+        if (!activeQuiz.isDemo) {
+          const updatedProf = { ...userProfileRef.current, totalAnswered: (userProfileRef.current.totalAnswered || 0) + 1 };
+          syncUserProfileToFirestore(fbUser.uid, updatedProf).catch(console.error);
+        }
+      }
       return;
     }
 
@@ -753,18 +1042,34 @@ export default function App() {
     room.players[playerId] = player;
 
     if (!activeQuiz.isDemo) {
-      setUserProfile(prev => {
-        const next = { ...prev, totalScore: (prev.totalScore || 0) + steps * 25 };
-        try {
-          const lb = JSON.parse(localStorage.getItem(STORAGE_KEYS.LEADERBOARD) || '[]');
-          const idx = lb.findIndex((item: any) => item.id === next.id);
-          const entry = { id: next.id, name: next.name, avatar: next.avatar, score: next.totalScore, wins: next.gamesWon };
-          if (idx >= 0) lb[idx] = entry; else lb.push(entry);
-          lb.sort((a: any, b: any) => b.score - a.score);
-          localStorage.setItem(STORAGE_KEYS.LEADERBOARD, JSON.stringify(lb.slice(0, 30)));
-        } catch (_) {}
-        return next;
-      });
+      const nextProf: PlayerProfile = {
+        ...userProfileRef.current,
+        totalAnswered: (userProfileRef.current.totalAnswered || 0) + 1,
+        totalCorrect: (userProfileRef.current.totalCorrect || 0) + 1,
+        totalScore: (userProfileRef.current.totalScore || 0) + steps * 25,
+        subjectStats: {
+          ...(userProfileRef.current.subjectStats || {}),
+          [room.subject || 'Umum']: {
+            answered: (userProfileRef.current.subjectStats?.[room.subject || 'Umum']?.answered || 0) + 1,
+            correct: (userProfileRef.current.subjectStats?.[room.subject || 'Umum']?.correct || 0) + 1
+          }
+        }
+      };
+      setUserProfile(nextProf);
+      try {
+        const lb = JSON.parse(localStorage.getItem(STORAGE_KEYS.LEADERBOARD) || '[]');
+        const idx = lb.findIndex((item: any) => item.id === nextProf.id);
+        const entry = { id: nextProf.id, name: nextProf.name, avatar: nextProf.avatar, score: nextProf.totalScore, wins: nextProf.gamesWon };
+        if (idx >= 0) lb[idx] = entry; else lb.push(entry);
+        lb.sort((a: any, b: any) => b.score - a.score);
+        localStorage.setItem(STORAGE_KEYS.LEADERBOARD, JSON.stringify(lb.slice(0, 30)));
+      } catch (_) {}
+      const fbUser = firebaseUserRef.current;
+      if (fbUser) {
+        syncUserProfileToFirestore(fbUser.uid, nextProf)
+          .then(() => fetchGlobalLeaderboardFromFirestore().then(setCloudLeaderboard).catch(() => {}))
+          .catch(console.error);
+      }
     }
 
     executePawnBoardMovement(room, playerId, steps, activeQuiz.isDemo);
@@ -775,8 +1080,10 @@ export default function App() {
     if (!startPlayer) return;
 
     const roomCode = initialRoom.code;
+    const fbUser = firebaseUserRef.current;
     setIsAnimatingMove(true);
-    persistRoomChange(initialRoom, 'ROOM_UPDATED', { playerUpdate: startPlayer });
+    isAnimatingMoveRef.current = true;
+    persistRoomChange(initialRoom, 'ROOM_UPDATED', { playerUpdate: startPlayer, skipServer: Boolean(fbUser) });
 
     const currentPos = startPlayer.position || 1;
     const targetPos = Math.min(100, currentPos + steps);
@@ -791,7 +1098,7 @@ export default function App() {
         latestPlayer.position = stepCursor;
         latestRoom.players[playerId] = latestPlayer;
         playSoundEffect('hop', soundEnabledRef.current);
-        persistRoomChange(latestRoom, 'ROOM_UPDATED', { playerUpdate: latestPlayer });
+        persistRoomChange(latestRoom, 'ROOM_UPDATED', { playerUpdate: latestPlayer, skipServer: Boolean(firebaseUserRef.current) });
       } else {
         clearInterval(hopTimer);
 
@@ -823,17 +1130,26 @@ export default function App() {
         latestRoom.players[playerId] = latestPlayer;
 
         setIsAnimatingMove(false);
+        isAnimatingMoveRef.current = false;
+
+        const currentFbUser = firebaseUserRef.current;
 
         if (latestPlayer.position >= 100) {
           latestPlayer.position = 100;
           latestPlayer.score = (latestPlayer.score || 0) + 200;
           latestRoom.players[playerId] = latestPlayer;
           if (!isDemo) {
-            setUserProfile(prev => ({
-              ...prev,
-              gamesWon: (prev.gamesWon || 0) + 1,
-              totalScore: (prev.totalScore || 0) + 200
-            }));
+            const winProf: PlayerProfile = {
+              ...userProfileRef.current,
+              gamesWon: (userProfileRef.current.gamesWon || 0) + 1,
+              totalScore: (userProfileRef.current.totalScore || 0) + 200
+            };
+            setUserProfile(winProf);
+            if (currentFbUser) {
+              syncUserProfileToFirestore(currentFbUser.uid, winProf)
+                .then(() => fetchGlobalLeaderboardFromFirestore().then(setCloudLeaderboard).catch(() => {}))
+                .catch(console.error);
+            }
           }
           const winText = `🏆 ${latestPlayer.avatar} ${latestPlayer.name} mencapai Puncak Petak 100!`;
           appendActivityLog(latestRoom, winText);
@@ -842,8 +1158,15 @@ export default function App() {
             persistRoomChange(latestRoom, 'ROOM_UPDATED', {
               playerUpdate: latestPlayer,
               activityText: winText,
-              phase: 'finished'
+              phase: 'finished',
+              skipServer: Boolean(currentFbUser)
             });
+            if (currentFbUser) {
+              upsertPlayerInFirestore(roomCode, currentFbUser.uid, latestPlayer)
+                .then(() => updateRoomMetaInFirestore(roomCode, { phase: 'finished' }))
+                .catch(console.error);
+              addActivityLogInFirestore(roomCode, currentFbUser.uid, winText).catch(console.error);
+            }
             setIsWinnerModalOpen(true);
             return;
           }
@@ -851,8 +1174,13 @@ export default function App() {
 
         persistRoomChange(latestRoom, 'ROOM_UPDATED', {
           playerUpdate: latestPlayer,
-          activityText: actText
+          activityText: actText,
+          skipServer: Boolean(currentFbUser)
         });
+        if (currentFbUser) {
+          upsertPlayerInFirestore(roomCode, currentFbUser.uid, latestPlayer).catch(console.error);
+          addActivityLogInFirestore(roomCode, currentFbUser.uid, actText).catch(console.error);
+        }
       }
     }, 220);
   };
@@ -861,53 +1189,90 @@ export default function App() {
   const handleStartClass = () => {
     const live = openRoomsRef.current[currentRoomId || ''];
     if (!live) return;
+    if (live.phase === 'finished') {
+      showToast('Kelas telah selesai. Buat kelas baru untuk sesi berikutnya.', 'info');
+      return;
+    }
     const room = cloneRoom(live);
     room.phase = 'playing';
     appendChatMessage(room, 'Guru', '👩‍🏫', 'Kelas dimulai! Silakan jawab soal untuk melangkah maju!', true);
     appendActivityLog(room, '▶️ Guru memulai permainan kelas');
-    persistRoomChange(room, 'ROOM_UPDATED');
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+    if (fbUser && room.hostId === fbUser.uid) {
+      updateRoomMetaInFirestore(room.code, { phase: 'playing' }).catch(console.error);
+      const lastMsg = room.messages[room.messages.length - 1];
+      if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
+      addActivityLogInFirestore(room.code, fbUser.uid, '▶️ Guru memulai permainan kelas').catch(console.error);
+    }
     showToast('Kelas dimulai! Tombol jawab soal siswa kini aktif.', 'success');
   };
 
   const handlePauseClass = () => {
     const live = openRoomsRef.current[currentRoomId || ''];
-    if (!live) return;
+    if (!live || live.phase === 'finished') return;
     const room = cloneRoom(live);
+    let actText = '';
     if (room.phase === 'playing') {
       room.phase = 'paused';
       appendChatMessage(room, 'Guru', '⏸️', 'Permainan dijeda sementara oleh Guru.', true);
-      appendActivityLog(room, '⏸️ Permainan dijeda Guru');
+      actText = '⏸️ Permainan dijeda Guru';
+      appendActivityLog(room, actText);
       showToast('Permainan dijeda sementara.', 'warning');
     } else if (room.phase === 'paused' || room.phase === 'stopped') {
       room.phase = 'playing';
       appendChatMessage(room, 'Guru', '▶️', 'Permainan dilanjutkan kembali!', true);
-      appendActivityLog(room, '▶️ Permainan dilanjutkan Guru');
+      actText = '▶️ Permainan dilanjutkan Guru';
+      appendActivityLog(room, actText);
       showToast('Permainan dilanjutkan!', 'success');
     }
-    persistRoomChange(room, 'ROOM_UPDATED');
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+    if (fbUser && room.hostId === fbUser.uid) {
+      updateRoomMetaInFirestore(room.code, { phase: room.phase }).catch(console.error);
+      const lastMsg = room.messages[room.messages.length - 1];
+      if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
+      if (actText) addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+    }
   };
 
   const handleStopClass = () => {
     const live = openRoomsRef.current[currentRoomId || ''];
-    if (!live) return;
+    if (!live || live.phase === 'finished') return;
     const room = cloneRoom(live);
     room.phase = 'stopped';
     appendChatMessage(room, 'Guru', '⏹️', 'Permainan dihentikan oleh Guru.', true);
-    appendActivityLog(room, '⏹️ Permainan dihentikan Guru');
-    persistRoomChange(room, 'ROOM_UPDATED');
+    const actText = '⏹️ Permainan dihentikan Guru';
+    appendActivityLog(room, actText);
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+    if (fbUser && room.hostId === fbUser.uid) {
+      updateRoomMetaInFirestore(room.code, { phase: 'stopped' }).catch(console.error);
+      const lastMsg = room.messages[room.messages.length - 1];
+      if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
+      addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+    }
     showToast('Permainan dihentikan.', 'warning');
   };
 
   const handleUpdateTeacherSettings = (grade: string, subject: string, topic: string) => {
     const live = openRoomsRef.current[currentRoomId || ''];
-    if (!live) return;
+    if (!live || live.phase === 'finished') return;
     const room = cloneRoom(live);
     room.grade = grade;
     room.subject = subject;
     room.topic = topic;
     appendChatMessage(room, 'Guru', '📚', `Materi diperbarui: ${grade} • ${subject} (${topic})`, true);
-    appendActivityLog(room, `📚 Mapel diubah: ${grade} • ${subject}`);
-    persistRoomChange(room, 'ROOM_UPDATED');
+    const actText = `📚 Mapel diubah: ${grade} • ${subject}`;
+    appendActivityLog(room, actText);
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+    if (fbUser && room.hostId === fbUser.uid) {
+      updateRoomMetaInFirestore(room.code, { grade, subject, topic }).catch(console.error);
+      const lastMsg = room.messages[room.messages.length - 1];
+      if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
+      addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+    }
     showToast('Pengaturan mapel & materi diterapkan ke seluruh siswa!', 'success');
   };
 
@@ -919,13 +1284,23 @@ export default function App() {
       const actText = `🎹 Guru memicu soundboard: ${soundLabel}`;
       appendChatMessage(room, 'Guru', '🎹', `Memutar soundboard: ${soundLabel}!`, true);
       appendActivityLog(room, actText);
-      persistRoomChange(room, 'ROOM_UPDATED');
+      const fbUser = firebaseUserRef.current;
+      persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
 
-      fetch(`/api/rooms/${encodeURIComponent(room.code)}/soundboard`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ soundKey, soundLabel, senderId: userProfile.id })
-      }).catch(() => {});
+      if (fbUser && room.hostId === fbUser.uid) {
+        if (room.phase !== 'finished') {
+          triggerSoundboardInFirestore(room.code, soundKey, soundLabel, fbUser.uid).catch(console.error);
+        }
+        const lastMsg = room.messages[room.messages.length - 1];
+        if (lastMsg) addChatMessageInFirestore(room.code, fbUser.uid, lastMsg).catch(console.error);
+        addActivityLogInFirestore(room.code, fbUser.uid, actText).catch(console.error);
+      } else {
+        fetch(`/api/rooms/${encodeURIComponent(room.code)}/soundboard`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ soundKey, soundLabel, senderId: userProfile.id })
+        }).catch(() => {});
+      }
     }
     showToast(`🎹 Memutar ${soundLabel}!`, 'success');
     setIsSoundboardOpen(false);
@@ -940,19 +1315,24 @@ export default function App() {
     const room = cloneRoom(live);
     const demoId = 'demo_teacher_pawn';
     if (!room.players[demoId]) {
-      room.players[demoId] = {
+      const demoPawn = {
         id: demoId,
         name: 'Demo Guru',
         avatar: '🎓',
         color: '#38bdf8',
-        role: 'student',
+        role: 'student' as const,
         isDemo: true,
         position: 1,
         score: 0,
         correctCount: 0,
         answeredCount: 0
       };
-      persistRoomChange(room, 'ROOM_UPDATED');
+      room.players[demoId] = demoPawn;
+      const fbUser = firebaseUserRef.current;
+      persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+      if (fbUser && room.hostId === fbUser.uid) {
+        upsertPlayerInFirestore(room.code, fbUser.uid, demoPawn).catch(console.error);
+      }
     }
 
     const pool = room.questions && room.questions.length > 0 ? room.questions : SEED_QUESTION_BANK;
@@ -985,20 +1365,25 @@ export default function App() {
       { id: 'sim_bima', name: 'Bima (Sim)', avatar: '🦁', color: '#f59e0b' },
       { id: 'sim_citra', name: 'Citra (Sim)', avatar: '🐼', color: '#10b981' }
     ];
+    const fbUser = firebaseUserRef.current;
     bots.forEach(b => {
       if (!room.players[b.id]) {
-        room.players[b.id] = {
+        const botPawn = {
           ...b,
-          role: 'student',
+          role: 'student' as const,
           isDemo: true,
           position: 1,
           score: 0,
           correctCount: 0,
           answeredCount: 0
         };
+        room.players[b.id] = botPawn;
+        if (fbUser && room.hostId === fbUser.uid) {
+          upsertPlayerInFirestore(room.code, fbUser.uid, botPawn).catch(console.error);
+        }
       }
     });
-    persistRoomChange(room, 'ROOM_UPDATED');
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
 
     setIsSimRunning(true);
     isSimRunningRef.current = true;
@@ -1043,12 +1428,18 @@ export default function App() {
       simIntervalRef.current = null;
     }
     const room = cloneRoom(live);
+    const demoIds: string[] = [];
     Object.keys(room.players || {}).forEach(pid => {
       if (room.players[pid]?.isDemo) {
+        demoIds.push(pid);
         delete room.players[pid];
       }
     });
-    persistRoomChange(room, 'ROOM_UPDATED');
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(room, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+    if (fbUser && room.hostId === fbUser.uid && demoIds.length > 0) {
+      clearDemoPlayersInFirestore(room.code, demoIds).catch(console.error);
+    }
     setIsTeacherDemoModalOpen(false);
     showToast('Seluruh bidak demo telah dibersihkan dari papan 3D.', 'info');
   };
@@ -1063,14 +1454,37 @@ export default function App() {
     appendChatMessage(room, sender, avatar, text, false);
     const lastChat = room.messages[room.messages.length - 1];
     const myPlayer = room.players?.[userProfile.id];
-    persistRoomChange(room, 'ROOM_UPDATED', myPlayer ? { playerUpdate: myPlayer, chatMessage: lastChat } : undefined);
+    const fbUser = firebaseUserRef.current;
+    persistRoomChange(
+      room,
+      'ROOM_UPDATED',
+      fbUser
+        ? { skipServer: true }
+        : myPlayer
+          ? { playerUpdate: myPlayer, chatMessage: lastChat }
+          : undefined
+    );
+    if (fbUser && lastChat) {
+      addChatMessageInFirestore(room.code, fbUser.uid, lastChat).catch(console.error);
+    }
   };
 
   const currentRoom = currentRoomId ? openRooms[currentRoomId] : null;
-  let globalLeaderboard: any[] = [];
+  let localLeaderboard: any[] = [];
   try {
-    globalLeaderboard = JSON.parse(localStorage.getItem(STORAGE_KEYS.LEADERBOARD) || '[]');
+    localLeaderboard = JSON.parse(localStorage.getItem(STORAGE_KEYS.LEADERBOARD) || '[]');
   } catch (_) {}
+  const mergedLeaderboardMap = new Map<string, any>();
+  [...localLeaderboard, ...cloudLeaderboard].forEach((item) => {
+    if (!item?.id) return;
+    const prev = mergedLeaderboardMap.get(item.id);
+    if (!prev || (item.score || 0) >= (prev.score || 0)) {
+      mergedLeaderboardMap.set(item.id, item);
+    }
+  });
+  const globalLeaderboard = Array.from(mergedLeaderboardMap.values())
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 30);
 
   return (
     <div className="relative w-screen h-[100dvh] overflow-hidden bg-[#060913] text-[#f8fafc] select-none font-sans">
@@ -1109,7 +1523,13 @@ export default function App() {
       {!currentRoom ? (
         <LobbyOverlay
           userProfile={userProfile}
-          onUpdateProfile={(prof) => setUserProfile(prof)}
+          onUpdateProfile={(prof) => {
+            setUserProfile(prof);
+            const fbUser = firebaseUserRef.current;
+            if (fbUser) {
+              syncUserProfileToFirestore(fbUser.uid, prof).catch(console.error);
+            }
+          }}
           openRooms={Object.values(openRooms)}
           onJoinRoom={handleJoinRoom}
           onOpenTeacherFlow={() => {
@@ -1144,11 +1564,16 @@ export default function App() {
           onDeleteRoom={(code) => {
             setPendingDeleteCode(code);
             if (isTeacherUnlocked()) {
+              const fbUser = firebaseUserRef.current;
+              const targetRoom = openRooms[code];
               const next = { ...openRooms };
               delete next[code];
               setOpenRooms(next);
               try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
               broadcastChannelRef.current?.postMessage({ type: 'ROOM_DELETED', code });
+              if (fbUser && (targetRoom?.hostId === fbUser.uid || fbUser.email === 'kedaikaryacollection@gmail.com')) {
+                deleteRoomInFirestore(code).catch(console.error);
+              }
               fetch(`/api/rooms/${encodeURIComponent(code)}`, { method: 'DELETE' }).catch(() => {});
               showToast(`Riwayat kelas ${code} telah dihapus.`, 'info');
             } else {
@@ -1156,6 +1581,10 @@ export default function App() {
               setIsTeacherPinModalOpen(true);
             }
           }}
+          authUser={firebaseUser ? { uid: firebaseUser.uid, displayName: firebaseUser.displayName, email: firebaseUser.email } : null}
+          authReady={authReady}
+          onGoogleSignIn={handleGoogleSignIn}
+          onGoogleSignOut={handleGoogleSignOut}
         />
       ) : (
         <>
@@ -1210,7 +1639,11 @@ export default function App() {
               setVisualThemeMode(next);
               const updated = cloneRoom(currentRoom);
               updated.themeMode = next;
-              persistRoomChange(updated, 'ROOM_UPDATED');
+              const fbUser = firebaseUserRef.current;
+              persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+              if (fbUser && currentRoom.hostId === fbUser.uid && currentRoom.phase !== 'finished') {
+                updateRoomMetaInFirestore(currentRoom.code, { themeMode: next }).catch(console.error);
+              }
               showToast(next === 'modern' ? 'Mode 3D: Perosotan & Lift' : 'Mode 3D: Ular & Tangga', 'info');
             }}
             onOpenSnakeCustomizer={() => setIsSnakeModalOpen(true)}
@@ -1221,7 +1654,11 @@ export default function App() {
               setBoardElevationStyle(next);
               const updated = cloneRoom(currentRoom);
               updated.elevationStyle = next;
-              persistRoomChange(updated, 'ROOM_UPDATED');
+              const fbUser = firebaseUserRef.current;
+              persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+              if (fbUser && currentRoom.hostId === fbUser.uid && currentRoom.phase !== 'finished') {
+                updateRoomMetaInFirestore(currentRoom.code, { elevationStyle: next }).catch(console.error);
+              }
               showToast(`Gaya Elevasi: ${next}`, 'info');
             }}
             onOpenChangePin={() => {
@@ -1230,8 +1667,14 @@ export default function App() {
             }}
             onEndClassPodium={() => {
               const updated = cloneRoom(currentRoom);
-              updated.phase = 'finished';
-              persistRoomChange(updated, 'ROOM_UPDATED');
+              const fbUser = firebaseUserRef.current;
+              if (updated.phase !== 'finished') {
+                updated.phase = 'finished';
+                persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+                if (fbUser && currentRoom.hostId === fbUser.uid) {
+                  updateRoomMetaInFirestore(currentRoom.code, { phase: 'finished' }).catch(console.error);
+                }
+              }
               setIsWinnerModalOpen(true);
             }}
             onOpenQuizModal={handleOpenQuiz}
@@ -1278,11 +1721,16 @@ export default function App() {
         onDeleteRoomSuccess={() => {
           setIsTeacherPinModalOpen(false);
           if (pendingDeleteCode) {
+            const fbUser = firebaseUserRef.current;
+            const targetRoom = openRooms[pendingDeleteCode];
             const next = { ...openRooms };
             delete next[pendingDeleteCode];
             setOpenRooms(next);
             try { localStorage.setItem(STORAGE_KEYS.ROOMS, JSON.stringify(next)); } catch (_) {}
             broadcastChannelRef.current?.postMessage({ type: 'ROOM_DELETED', code: pendingDeleteCode });
+            if (fbUser && (targetRoom?.hostId === fbUser.uid || fbUser.email === 'kedaikaryacollection@gmail.com')) {
+              deleteRoomInFirestore(pendingDeleteCode).catch(console.error);
+            }
             fetch(`/api/rooms/${encodeURIComponent(pendingDeleteCode)}`, { method: 'DELETE' }).catch(() => {});
             showToast(`Riwayat kelas ${pendingDeleteCode} telah dihapus.`, 'info');
             setPendingDeleteCode(null);
@@ -1318,7 +1766,13 @@ export default function App() {
           const generated = buildAiQuestionsForTopic(g, s, t);
           const updated = cloneRoom(currentRoom);
           updated.questions = [...generated, ...(updated.questions || [])];
-          persistRoomChange(updated, 'ROOM_UPDATED');
+          const fbUser = firebaseUserRef.current;
+          persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+          if (fbUser && currentRoom.hostId === fbUser.uid) {
+            generated.forEach(q => {
+              saveQuestionInFirestore(currentRoom.code, q, false).catch(console.error);
+            });
+          }
           showToast('5 soal baru berhasil dibuat oleh AI!', 'success');
         }}
         onSaveQuestion={(q, editId) => {
@@ -1326,16 +1780,25 @@ export default function App() {
           const updated = cloneRoom(currentRoom);
           if (!updated.questions) updated.questions = [];
           const idx = updated.questions.findIndex(item => item.id === editId);
-          if (idx >= 0) updated.questions[idx] = q;
+          const isEdit = idx >= 0;
+          if (isEdit) updated.questions[idx] = q;
           else updated.questions.unshift(q);
-          persistRoomChange(updated, 'ROOM_UPDATED');
+          const fbUser = firebaseUserRef.current;
+          persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+          if (fbUser && currentRoom.hostId === fbUser.uid) {
+            saveQuestionInFirestore(currentRoom.code, q, isEdit).catch(console.error);
+          }
           showToast('Soal berhasil disimpan ke kelas!', 'success');
         }}
         onDeleteQuestion={(id) => {
           if (!currentRoom) return;
           const updated = cloneRoom(currentRoom);
           updated.questions = (updated.questions || []).filter(q => q.id !== id);
-          persistRoomChange(updated, 'ROOM_UPDATED');
+          const fbUser = firebaseUserRef.current;
+          persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+          if (fbUser && currentRoom.hostId === fbUser.uid) {
+            deleteQuestionInFirestore(currentRoom.code, id).catch(console.error);
+          }
         }}
       />
 
@@ -1350,7 +1813,13 @@ export default function App() {
         kind={overlayModalKind}
         onClose={() => setOverlayModalKind(null)}
         userProfile={userProfile}
-        onUpdateProfile={(prof) => setUserProfile(prof)}
+        onUpdateProfile={(prof) => {
+          setUserProfile(prof);
+          const fbUser = firebaseUserRef.current;
+          if (fbUser) {
+            syncUserProfileToFirestore(fbUser.uid, prof).catch(console.error);
+          }
+        }}
         globalLeaderboard={globalLeaderboard}
       />
 
@@ -1378,7 +1847,11 @@ export default function App() {
           if (currentRoom) {
             const updated = cloneRoom(currentRoom);
             updated.snakeStyle = cfg;
-            persistRoomChange(updated, 'ROOM_UPDATED');
+            const fbUser = firebaseUserRef.current;
+            persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+            if (fbUser && currentRoom.hostId === fbUser.uid && currentRoom.phase !== 'finished') {
+              updateRoomMetaInFirestore(currentRoom.code, { snakeStyle: cfg }).catch(console.error);
+            }
           }
         }}
       />
@@ -1392,7 +1865,11 @@ export default function App() {
           if (currentRoom) {
             const updated = cloneRoom(currentRoom);
             updated.boardTheme = themeKey;
-            persistRoomChange(updated, 'ROOM_UPDATED');
+            const fbUser = firebaseUserRef.current;
+            persistRoomChange(updated, 'ROOM_UPDATED', { skipServer: Boolean(fbUser) });
+            if (fbUser && currentRoom.hostId === fbUser.uid && currentRoom.phase !== 'finished') {
+              updateRoomMetaInFirestore(currentRoom.code, { boardTheme: themeKey }).catch(console.error);
+            }
           }
           showToast(`Nuansa papan diubah`, 'info');
         }}

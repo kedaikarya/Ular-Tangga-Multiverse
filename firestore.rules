@@ -1,0 +1,326 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRoomCode(code) {
+      return code is string && code.size() >= 4 && code.size() <= 16 && code.matches('^[A-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'kedaikaryacollection@gmail.com'
+      );
+    }
+
+    function roomDoc(roomCode) {
+      return get(/databases/$(database)/documents/rooms/$(roomCode));
+    }
+
+    function isRoomHost(roomCode) {
+      return exists(/databases/$(database)/documents/rooms/$(roomCode)) &&
+        roomDoc(roomCode).data.hostId == request.auth.uid;
+    }
+
+    function isRoomMember(roomCode) {
+      return exists(/databases/$(database)/documents/rooms/$(roomCode)/players/$(request.auth.uid));
+    }
+
+    function isRoomParticipant(roomCode) {
+      return isRoomHost(roomCode) || isRoomMember(roomCode);
+    }
+
+    // 3. Entity Validators (Anti-Update-Gap Blueprints)
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['id', 'name', 'avatar', 'color', 'totalScore', 'totalAnswered', 'totalCorrect', 'gamesWon', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'avatar', 'color', 'totalScore', 'totalAnswered', 'totalCorrect', 'gamesWon', 'subjectStats', 'updatedAt'])
+        && data.id == userId
+        && data.id == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 40
+        && data.avatar is string && data.avatar.size() >= 1 && data.avatar.size() <= 16
+        && data.color is string && data.color.size() >= 3 && data.color.size() <= 24
+        && data.totalScore is int && data.totalScore >= 0
+        && data.totalAnswered is int && data.totalAnswered >= 0
+        && data.totalCorrect is int && data.totalCorrect >= 0
+        && data.gamesWon is int && data.gamesWon >= 0
+        && (!('subjectStats' in data) || data.subjectStats is map)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSnakeStyle(s) {
+      return s is map
+        && s.keys().hasAll(['colorPreset', 'customHex', 'patternPreset'])
+        && s.keys().hasOnly(['colorPreset', 'customHex', 'patternPreset'])
+        && s.colorPreset is string && s.colorPreset.size() >= 1 && s.colorPreset.size() <= 30
+        && s.customHex is string && s.customHex.size() >= 4 && s.customHex.size() <= 16
+        && s.patternPreset is string && s.patternPreset.size() >= 1 && s.patternPreset.size() <= 30;
+    }
+
+    function isValidSoundboardTrigger(sb) {
+      return sb is map
+        && sb.keys().hasAll(['soundKey', 'soundLabel', 'senderId', 'triggeredAt'])
+        && sb.keys().hasOnly(['soundKey', 'soundLabel', 'senderId', 'triggeredAt'])
+        && sb.soundKey is string && sb.soundKey.size() >= 1 && sb.soundKey.size() <= 32
+        && sb.soundLabel is string && sb.soundLabel.size() >= 1 && sb.soundLabel.size() <= 60
+        && sb.senderId is string && sb.senderId.size() >= 1 && sb.senderId.size() <= 128
+        && sb.triggeredAt == request.time;
+    }
+
+    function isValidRoom(data, roomCode) {
+      return data.keys().hasAll(['code', 'name', 'grade', 'subject', 'topic', 'themeMode', 'elevationStyle', 'boardTheme', 'snakeStyle', 'phase', 'hostId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'name', 'grade', 'subject', 'topic', 'themeMode', 'elevationStyle', 'boardTheme', 'snakeStyle', 'phase', 'hostId', 'soundboardTrigger', 'createdAt', 'updatedAt'])
+        && data.code == roomCode
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 40
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 40
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 120
+        && data.themeMode in ['classic', 'modern']
+        && data.elevationStyle in ['stepped', 'terraced', 'pyramid']
+        && data.boardTheme in ['rainbow', 'wood', 'grayscale', 'bamboo', 'marble']
+        && isValidSnakeStyle(data.snakeStyle)
+        && data.phase in ['waiting', 'playing', 'paused', 'stopped', 'finished']
+        && data.hostId is string && data.hostId.size() >= 1 && data.hostId.size() <= 128
+        && (!('soundboardTrigger' in data) || isValidSoundboardTrigger(data.soundboardTrigger))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoomPlayer(data, playerId, roomCode) {
+      return data.keys().hasAll(['id', 'roomCode', 'uid', 'name', 'avatar', 'color', 'role', 'isDemo', 'position', 'score', 'correctCount', 'answeredCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'roomCode', 'uid', 'name', 'avatar', 'color', 'role', 'isDemo', 'position', 'score', 'correctCount', 'answeredCount', 'createdAt', 'updatedAt'])
+        && data.id == playerId
+        && data.roomCode == roomCode
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 50
+        && data.avatar is string && data.avatar.size() >= 1 && data.avatar.size() <= 16
+        && data.color is string && data.color.size() >= 3 && data.color.size() <= 24
+        && data.role in ['teacher', 'student']
+        && data.isDemo is bool
+        && data.position is int && data.position >= 1 && data.position <= 100
+        && data.score is int && data.score >= 0
+        && data.correctCount is int && data.correctCount >= 0
+        && data.answeredCount is int && data.answeredCount >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoomQuestion(data, questionId, roomCode) {
+      return data.keys().hasAll(['id', 'roomCode', 'grade', 'subject', 'topic', 'question', 'options', 'correctIndex', 'steps', 'explanation', 'createdAt'])
+        && data.keys().hasOnly(['id', 'roomCode', 'grade', 'subject', 'topic', 'question', 'options', 'correctIndex', 'steps', 'explanation', 'createdAt'])
+        && data.id == questionId
+        && data.roomCode == roomCode
+        && data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 40
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 40
+        && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 120
+        && data.question is string && data.question.size() >= 1 && data.question.size() <= 600
+        && data.options is list && data.options.size() >= 2 && data.options.size() <= 6 && data.options[0] is string
+        && data.correctIndex is int && data.correctIndex >= 0 && data.correctIndex < data.options.size()
+        && data.steps is int && data.steps >= 1 && data.steps <= 12
+        && data.explanation is string && data.explanation.size() <= 600
+        && data.createdAt is timestamp;
+    }
+
+    function isValidRoomMessage(data, messageId, roomCode) {
+      return data.keys().hasAll(['id', 'roomCode', 'senderUid', 'senderName', 'avatar', 'text', 'isSystem', 'time', 'createdAt'])
+        && data.keys().hasOnly(['id', 'roomCode', 'senderUid', 'senderName', 'avatar', 'text', 'isSystem', 'time', 'createdAt'])
+        && data.id == messageId
+        && data.roomCode == roomCode
+        && data.senderUid == request.auth.uid
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50
+        && data.avatar is string && data.avatar.size() >= 1 && data.avatar.size() <= 16
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 300
+        && data.isSystem is bool
+        && data.time is string && data.time.size() >= 1 && data.time.size() <= 20
+        && data.createdAt == request.time;
+    }
+
+    function isValidActivityLog(data, logId, roomCode) {
+      return data.keys().hasAll(['id', 'roomCode', 'uid', 'text', 'time', 'createdAt'])
+        && data.keys().hasOnly(['id', 'roomCode', 'uid', 'text', 'time', 'createdAt'])
+        && data.id == logId
+        && data.roomCode == roomCode
+        && data.uid == request.auth.uid
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 300
+        && data.time is string && data.time.size() >= 1 && data.time.size() <= 20
+        && data.createdAt == request.time;
+    }
+
+    function isValidLeaderboardEntry(data, entryId) {
+      return data.keys().hasAll(['id', 'name', 'avatar', 'score', 'wins', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'avatar', 'score', 'wins', 'updatedAt'])
+        && data.id == entryId
+        && data.id == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 40
+        && data.avatar is string && data.avatar.size() >= 1 && data.avatar.size() <= 16
+        && data.score is int && data.score >= 0
+        && data.wins is int && data.wins >= 0
+        && data.updatedAt == request.time;
+    }
+
+    // 4. Collection Rules
+
+    // Users (PII-isolated private profile)
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId) && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && request.auth.uid == userId
+        && isValidUserProfile(incoming(), userId)
+        && incoming().id == existing().id
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'color', 'totalScore', 'totalAnswered', 'totalCorrect', 'gamesWon', 'subjectStats', 'updatedAt']);
+    }
+
+    // Leaderboard
+    match /leaderboard/{entryId} {
+      allow get: if isVerified() && isValidId(entryId);
+      allow list: if isVerified() && resource.data.score >= 0;
+      allow create: if isVerified() && isValidId(entryId) && entryId == request.auth.uid
+        && isValidLeaderboardEntry(incoming(), entryId);
+      allow update: if isVerified() && isValidId(entryId) && entryId == request.auth.uid
+        && isValidLeaderboardEntry(incoming(), entryId)
+        && incoming().id == existing().id
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'score', 'wins', 'updatedAt']);
+    }
+
+    // Rooms
+    match /rooms/{roomCode} {
+      allow get: if isVerified() && isValidRoomCode(roomCode);
+      allow list: if isVerified() && (resource.data.hostId == request.auth.uid || request.auth.token.email == 'kedaikaryacollection@gmail.com');
+
+      allow create: if isVerified() && isValidRoomCode(roomCode)
+        && isValidRoom(incoming(), roomCode)
+        && incoming().hostId == request.auth.uid
+        && incoming().phase == 'waiting'
+        && !('soundboardTrigger' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerified() && isValidRoomCode(roomCode)
+        && isValidRoom(incoming(), roomCode)
+        && incoming().code == existing().code
+        && incoming().hostId == existing().hostId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() || (
+            existing().phase != 'finished' && (
+              // Tier 1: Host updates settings, theme, phase, or soundboard
+              (existing().hostId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['grade', 'subject', 'topic', 'themeMode', 'elevationStyle', 'boardTheme', 'snakeStyle', 'phase', 'soundboardTrigger', 'updatedAt'])) ||
+              // Tier 2: Joined student winning the game transitions phase to finished
+              (isRoomMember(roomCode) && existing().phase == 'playing' && incoming().phase == 'finished' && incoming().diff(existing()).affectedKeys().hasOnly(['phase', 'updatedAt']))
+            )
+          )
+        );
+
+      allow delete: if isVerified() && isValidRoomCode(roomCode) && (existing().hostId == request.auth.uid || isAdmin());
+
+      // Players subcollection
+      match /players/{playerId} {
+        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId) && isRoomParticipant(roomCode);
+        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+
+        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+          && exists(/databases/$(database)/documents/rooms/$(roomCode))
+          && isValidRoomPlayer(incoming(), playerId, roomCode)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            (playerId == request.auth.uid && incoming().uid == request.auth.uid && incoming().isDemo == false && (incoming().role == 'student' || isRoomHost(roomCode))) ||
+            (isRoomHost(roomCode) && incoming().isDemo == true && incoming().uid == request.auth.uid)
+          );
+
+        allow update: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+          && exists(/databases/$(database)/documents/rooms/$(roomCode))
+          && isValidRoomPlayer(incoming(), playerId, roomCode)
+          && incoming().id == existing().id
+          && incoming().roomCode == existing().roomCode
+          && incoming().uid == existing().uid
+          && incoming().role == existing().role
+          && incoming().isDemo == existing().isDemo
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin() || (
+              roomDoc(roomCode).data.phase != 'finished' && (
+                (existing().uid == request.auth.uid && existing().isDemo == false && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'color', 'position', 'score', 'correctCount', 'answeredCount', 'updatedAt'])) ||
+                (isRoomHost(roomCode) && existing().isDemo == true && incoming().diff(existing()).affectedKeys().hasOnly(['position', 'score', 'correctCount', 'answeredCount', 'updatedAt']))
+              )
+            )
+          );
+
+        allow delete: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+          && (isRoomHost(roomCode) || isAdmin());
+      }
+
+      // Questions subcollection
+      match /questions/{questionId} {
+        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId) && isRoomParticipant(roomCode);
+        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+
+        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+          && isRoomHost(roomCode)
+          && isValidRoomQuestion(incoming(), questionId, roomCode)
+          && incoming().createdAt == request.time;
+
+        allow update: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+          && isRoomHost(roomCode)
+          && isValidRoomQuestion(incoming(), questionId, roomCode)
+          && incoming().id == existing().id
+          && incoming().roomCode == existing().roomCode
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['grade', 'subject', 'topic', 'question', 'options', 'correctIndex', 'steps', 'explanation']);
+
+        allow delete: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+          && (isRoomHost(roomCode) || isAdmin());
+      }
+
+      // Chat messages subcollection
+      match /messages/{messageId} {
+        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(messageId) && isRoomParticipant(roomCode);
+        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+
+        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(messageId)
+          && isRoomParticipant(roomCode)
+          && isValidRoomMessage(incoming(), messageId, roomCode);
+      }
+
+      // Activity log subcollection
+      match /activityLog/{logId} {
+        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(logId) && isRoomParticipant(roomCode);
+        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+
+        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(logId)
+          && isRoomParticipant(roomCode)
+          && isValidActivityLog(incoming(), logId, roomCode);
+      }
+    }
+  }
+}
