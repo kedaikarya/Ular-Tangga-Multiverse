@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+.glass-panel {
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.glass-panel-strong {
+    background: rgba(9, 14, 28, 0.94);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.4);
+    border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(99, 102, 241, 0.45);
+    border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(99, 102, 241, 0.75);
+}
+@keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.55); }
+    50% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+}
+.btn-pulse {
+    animation: pulseGlow 2.2s infinite;
+}
+@keyframes floatSlow {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-4px); }
+}
+.animate-float {
+    animation: floatSlow 3s ease-in-out infinite;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Ular Tangga Edukasi 3D",
+  "description": "Papan Balok Bertingkat 3D dengan Layar Guru & Siswa Real-Time, Soal Fase A-D (SD-SMP) Tanpa Batas (∞), Ular & Tangga / Perosotan & Lift.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
