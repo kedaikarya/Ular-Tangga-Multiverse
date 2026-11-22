@@ -85,7 +85,7 @@ export default function LobbyOverlay({
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="font-display text-base sm:text-lg font-extrabold tracking-tight text-white">
-                Ular Tangga Edukasi 3D
+                Ular Tangga Multiverse
               </h1>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
                 FASE A – D • ∞ SOAL
