@@ -141,7 +141,7 @@ export async function createRoomInFirestore(room: RoomData, hostUid: string): Pr
 
 export async function fetchRoomFromFirestore(code: string): Promise<RoomData | null> {
   const cleanCode = sanitizeRoomCode(code);
-  if (!cleanCode) return null;
+  if (!cleanCode || cleanCode.length < 4) return null;
   const path = `rooms/${cleanCode}`;
   try {
     const snap = await getDoc(doc(db, 'rooms', cleanCode));
@@ -178,7 +178,13 @@ export async function joinRoomInFirestore(
   joinActivityText: string
 ): Promise<void> {
   const cleanCode = sanitizeRoomCode(code);
+  if (!cleanCode || cleanCode.length < 4) {
+    throw new Error('Kode kelas minimal 4 karakter.');
+  }
   const playerPath = `rooms/${cleanCode}/players/${uid}`;
+  const cleanName = String(player.name || '').trim().slice(0, 50) || 'Siswa';
+  const cleanAvatar = String(player.avatar || '').trim().slice(0, 16) || '🦊';
+  const cleanColor = String(player.color || '').trim().slice(0, 24) || '#6366f1';
   try {
     const playerRef = doc(db, 'rooms', cleanCode, 'players', uid);
     const existingSnap = await getDoc(playerRef);
@@ -189,15 +195,15 @@ export async function joinRoomInFirestore(
         id: uid,
         roomCode: cleanCode,
         uid,
-        name: String(player.name || 'Siswa').slice(0, 50),
-        avatar: String(player.avatar || '🦊').slice(0, 16),
-        color: String(player.color || '#6366f1').slice(0, 24),
+        name: cleanName,
+        avatar: cleanAvatar,
+        color: cleanColor,
         role: 'student',
         isDemo: false,
-        position: Math.max(1, Math.min(100, Math.floor(player.position || 1))),
-        score: Math.max(0, Math.floor(player.score || 0)),
-        correctCount: Math.max(0, Math.floor(player.correctCount || 0)),
-        answeredCount: Math.max(0, Math.floor(player.answeredCount || 0)),
+        position: Math.max(1, Math.min(100, Math.floor(Number(player.position) || 1))),
+        score: Math.max(0, Math.floor(Number(player.score) || 0)),
+        correctCount: Math.max(0, Math.floor(Number(player.correctCount) || 0)),
+        answeredCount: Math.max(0, Math.floor(Number(player.answeredCount) || 0)),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -210,8 +216,8 @@ export async function joinRoomInFirestore(
         id: msgId,
         roomCode: cleanCode,
         senderUid: uid,
-        senderName: String(player.name || 'Siswa').slice(0, 50),
-        avatar: String(player.avatar || '🦊').slice(0, 16),
+        senderName: cleanName,
+        avatar: cleanAvatar,
         text: 'bergabung ke dalam kelas!',
         isSystem: true,
         time: nowTime,
@@ -221,17 +227,20 @@ export async function joinRoomInFirestore(
         id: logId,
         roomCode: cleanCode,
         uid,
-        text: joinActivityText.slice(0, 300),
+        text: (joinActivityText || `${cleanAvatar} ${cleanName} bergabung ke kelas`).slice(0, 300),
         time: nowTime,
         createdAt: serverTimestamp()
       });
       await batch.commit();
     } else {
-      await updateDoc(playerRef, {
-        name: String(player.name || 'Siswa').slice(0, 50),
-        avatar: String(player.avatar || '🦊').slice(0, 16),
-        updatedAt: serverTimestamp()
-      });
+      const prev = existingSnap.data();
+      if (prev.name !== cleanName || prev.avatar !== cleanAvatar) {
+        await updateDoc(playerRef, {
+          name: cleanName,
+          avatar: cleanAvatar,
+          updatedAt: serverTimestamp()
+        });
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, playerPath);
@@ -636,18 +645,25 @@ export function subscribeToRoomRealtime(
 
 export async function syncUserProfileToFirestore(uid: string, profile: PlayerProfile): Promise<void> {
   const path = `users/${uid}`;
+  const cleanName = String(profile.name || '').trim().slice(0, 40) || 'Siswa Pintar';
+  const cleanAvatar = String(profile.avatar || '').trim().slice(0, 16) || '🦊';
+  const cleanColor = String(profile.color || '').trim().slice(0, 24) || '#6366f1';
+  const safeScore = Math.max(0, Math.floor(Number(profile.totalScore) || 0));
+  const safeAnswered = Math.max(0, Math.floor(Number(profile.totalAnswered) || 0));
+  const safeCorrect = Math.max(0, Math.floor(Number(profile.totalCorrect) || 0));
+  const safeWins = Math.max(0, Math.floor(Number(profile.gamesWon) || 0));
   try {
     await setDoc(
       doc(db, 'users', uid),
       {
         id: uid,
-        name: String(profile.name || 'Siswa Pintar').slice(0, 40),
-        avatar: String(profile.avatar || '🦊').slice(0, 16),
-        color: String(profile.color || '#6366f1').slice(0, 24),
-        totalScore: Math.max(0, Math.floor(profile.totalScore || 0)),
-        totalAnswered: Math.max(0, Math.floor(profile.totalAnswered || 0)),
-        totalCorrect: Math.max(0, Math.floor(profile.totalCorrect || 0)),
-        gamesWon: Math.max(0, Math.floor(profile.gamesWon || 0)),
+        name: cleanName,
+        avatar: cleanAvatar,
+        color: cleanColor,
+        totalScore: safeScore,
+        totalAnswered: safeAnswered,
+        totalCorrect: safeCorrect,
+        gamesWon: safeWins,
         subjectStats: profile.subjectStats || {},
         updatedAt: serverTimestamp()
       },
@@ -658,10 +674,10 @@ export async function syncUserProfileToFirestore(uid: string, profile: PlayerPro
       doc(db, 'leaderboard', uid),
       {
         id: uid,
-        name: String(profile.name || 'Siswa Pintar').slice(0, 40),
-        avatar: String(profile.avatar || '🦊').slice(0, 16),
-        score: Math.max(0, Math.floor(profile.totalScore || 0)),
-        wins: Math.max(0, Math.floor(profile.gamesWon || 0)),
+        name: cleanName,
+        avatar: cleanAvatar,
+        score: safeScore,
+        wins: safeWins,
         updatedAt: serverTimestamp()
       },
       { merge: true }

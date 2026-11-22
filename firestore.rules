@@ -244,7 +244,7 @@ service cloud.firestore {
 
       // Players subcollection
       match /players/{playerId} {
-        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId) && isRoomParticipant(roomCode);
+        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId) && (playerId == request.auth.uid || isRoomParticipant(roomCode));
         allow list: if isSignedIn() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
 
         allow create: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId)

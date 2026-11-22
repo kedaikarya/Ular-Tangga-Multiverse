@@ -765,7 +765,8 @@ export default function App() {
     if (!room) {
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(cleanCode)}`);
-        if (res.ok) {
+        const ctype = res.headers.get('content-type') || '';
+        if (res.ok && ctype.includes('application/json')) {
           const data = await res.json();
           if (data?.room) room = data.room;
         }
@@ -827,9 +828,14 @@ export default function App() {
     if (fbUser) {
       try {
         await joinRoomInFirestore(cleanCode, fbUser.uid, playerEntry, joinActivityText);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Join Firestore error:', err);
-        showToast('Gagal bergabung ke kelas Cloud.', 'error');
+        const rawMsg = String(err?.message || '');
+        if (rawMsg.includes('permission') || rawMsg.includes('PERMISSION_DENIED')) {
+          showToast('Izin akses kelas ditolak oleh aturan Firestore.', 'error');
+        } else {
+          showToast('Gagal bergabung ke kelas Cloud. Periksa koneksi internet Anda.', 'error');
+        }
         return;
       }
     } else {
@@ -843,7 +849,8 @@ export default function App() {
             activityText: !alreadyInRoom ? joinActivityText : undefined
           })
         });
-        if (joinRes.ok) {
+        const ctype = joinRes.headers.get('content-type') || '';
+        if (joinRes.ok && ctype.includes('application/json')) {
           const joinData = await joinRes.json();
           if (joinData?.room) syncedRoom = joinData.room;
         }
