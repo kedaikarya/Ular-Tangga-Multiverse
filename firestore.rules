@@ -188,10 +188,10 @@ service cloud.firestore {
 
     // Users (PII-isolated private profile)
     match /users/{userId} {
-      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
-      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId
         && isValidUserProfile(incoming(), userId) && incoming().updatedAt == request.time;
-      allow update: if isVerified() && isValidId(userId) && request.auth.uid == userId
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId
         && isValidUserProfile(incoming(), userId)
         && incoming().id == existing().id
         && incoming().updatedAt == request.time
@@ -200,11 +200,11 @@ service cloud.firestore {
 
     // Leaderboard
     match /leaderboard/{entryId} {
-      allow get: if isVerified() && isValidId(entryId);
-      allow list: if isVerified() && resource.data.score >= 0;
-      allow create: if isVerified() && isValidId(entryId) && entryId == request.auth.uid
+      allow get: if isSignedIn() && isValidId(entryId);
+      allow list: if isSignedIn() && resource.data.score >= 0;
+      allow create: if isSignedIn() && isValidId(entryId) && entryId == request.auth.uid
         && isValidLeaderboardEntry(incoming(), entryId);
-      allow update: if isVerified() && isValidId(entryId) && entryId == request.auth.uid
+      allow update: if isSignedIn() && isValidId(entryId) && entryId == request.auth.uid
         && isValidLeaderboardEntry(incoming(), entryId)
         && incoming().id == existing().id
         && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'score', 'wins', 'updatedAt']);
@@ -212,10 +212,10 @@ service cloud.firestore {
 
     // Rooms
     match /rooms/{roomCode} {
-      allow get: if isVerified() && isValidRoomCode(roomCode);
-      allow list: if isVerified() && (resource.data.hostId == request.auth.uid || request.auth.token.email == 'kedaikaryacollection@gmail.com');
+      allow get: if isSignedIn() && isValidRoomCode(roomCode);
+      allow list: if isSignedIn() && (resource.data.hostId == request.auth.uid || (isVerified() && request.auth.token.email == 'kedaikaryacollection@gmail.com'));
 
-      allow create: if isVerified() && isValidRoomCode(roomCode)
+      allow create: if isSignedIn() && isValidRoomCode(roomCode)
         && isValidRoom(incoming(), roomCode)
         && incoming().hostId == request.auth.uid
         && incoming().phase == 'waiting'
@@ -223,7 +223,7 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerified() && isValidRoomCode(roomCode)
+      allow update: if isSignedIn() && isValidRoomCode(roomCode)
         && isValidRoom(incoming(), roomCode)
         && incoming().code == existing().code
         && incoming().hostId == existing().hostId
@@ -240,14 +240,14 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if isVerified() && isValidRoomCode(roomCode) && (existing().hostId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && isValidRoomCode(roomCode) && (existing().hostId == request.auth.uid || isAdmin());
 
       // Players subcollection
       match /players/{playerId} {
-        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId) && isRoomParticipant(roomCode);
-        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId) && isRoomParticipant(roomCode);
+        allow list: if isSignedIn() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
 
-        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+        allow create: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId)
           && exists(/databases/$(database)/documents/rooms/$(roomCode))
           && isValidRoomPlayer(incoming(), playerId, roomCode)
           && incoming().createdAt == request.time
@@ -257,7 +257,7 @@ service cloud.firestore {
             (isRoomHost(roomCode) && incoming().isDemo == true && incoming().uid == request.auth.uid)
           );
 
-        allow update: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+        allow update: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId)
           && exists(/databases/$(database)/documents/rooms/$(roomCode))
           && isValidRoomPlayer(incoming(), playerId, roomCode)
           && incoming().id == existing().id
@@ -276,21 +276,21 @@ service cloud.firestore {
             )
           );
 
-        allow delete: if isVerified() && isValidRoomCode(roomCode) && isValidId(playerId)
+        allow delete: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(playerId)
           && (isRoomHost(roomCode) || isAdmin());
       }
 
       // Questions subcollection
       match /questions/{questionId} {
-        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId) && isRoomParticipant(roomCode);
-        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(questionId) && isRoomParticipant(roomCode);
+        allow list: if isSignedIn() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
 
-        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+        allow create: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(questionId)
           && isRoomHost(roomCode)
           && isValidRoomQuestion(incoming(), questionId, roomCode)
           && incoming().createdAt == request.time;
 
-        allow update: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+        allow update: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(questionId)
           && isRoomHost(roomCode)
           && isValidRoomQuestion(incoming(), questionId, roomCode)
           && incoming().id == existing().id
@@ -298,26 +298,26 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().diff(existing()).affectedKeys().hasOnly(['grade', 'subject', 'topic', 'question', 'options', 'correctIndex', 'steps', 'explanation']);
 
-        allow delete: if isVerified() && isValidRoomCode(roomCode) && isValidId(questionId)
+        allow delete: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(questionId)
           && (isRoomHost(roomCode) || isAdmin());
       }
 
       // Chat messages subcollection
       match /messages/{messageId} {
-        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(messageId) && isRoomParticipant(roomCode);
-        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(messageId) && isRoomParticipant(roomCode);
+        allow list: if isSignedIn() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
 
-        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(messageId)
+        allow create: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(messageId)
           && isRoomParticipant(roomCode)
           && isValidRoomMessage(incoming(), messageId, roomCode);
       }
 
       // Activity log subcollection
       match /activityLog/{logId} {
-        allow get: if isVerified() && isValidRoomCode(roomCode) && isValidId(logId) && isRoomParticipant(roomCode);
-        allow list: if isVerified() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
+        allow get: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(logId) && isRoomParticipant(roomCode);
+        allow list: if isSignedIn() && isValidRoomCode(roomCode) && resource.data.roomCode == roomCode;
 
-        allow create: if isVerified() && isValidRoomCode(roomCode) && isValidId(logId)
+        allow create: if isSignedIn() && isValidRoomCode(roomCode) && isValidId(logId)
           && isRoomParticipant(roomCode)
           && isValidActivityLog(incoming(), logId, roomCode);
       }

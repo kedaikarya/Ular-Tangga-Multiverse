@@ -1,7 +1,7 @@
 # Security Specification (Phase 0 TDD) — Ular Tangga Edukasi 3D
 
 ## Data Invariants
-1. **Verified Identity**: Every write requires `request.auth != null && request.auth.token.email_verified == true`.
+1. **Authenticated Identity**: Every read/write requires `request.auth != null` (supporting seamless Anonymous Auth sessions and Google Sign-In), while admin privileges strictly require `request.auth.token.email_verified == true`.
 2. **Room Ownership (`hostId`)**: A room must have `hostId == request.auth.uid` on creation, `phase == 'waiting'`, and `hostId` & `createdAt` are immutable thereafter.
 3. **Terminal State Lock**: Once `room.phase == 'finished'`, no non-admin client can revert or mutate the room state.
 4. **Subcollection Master Gate & Bounded Arrays**: Players, questions, messages, and activity logs live in bounded subcollections under `/rooms/{roomCode}` rather than unbounded arrays, and every write verifies parent room existence and valid `roomCode` matching.
@@ -10,7 +10,7 @@
 
 ## The "Dirty Dozen" Attack Payloads (All Must Return PERMISSION_DENIED)
 1. **Unauthenticated Room Create**: `request.auth == null` creating `/rooms/ABC123`.
-2. **Unverified Email Spoof**: `email == 'kedaikaryacollection@gmail.com'` with `email_verified: false`.
+2. **Unverified Admin Email Spoof**: `email == 'kedaikaryacollection@gmail.com'` with `email_verified: false` attempting admin delete/update on another host's room.
 3. **Identity Spoofing on Room Create**: `hostId: 'victim_uid'` when `request.auth.uid == 'attacker_uid'`.
 4. **Ghost Field / Shadow Update**: Updating `/rooms/ABC123` with `{ phase: 'playing', isVerified: true, updatedAt: request.time }`.
 5. **Host Hijack Update**: Updating `/rooms/ABC123` with `{ hostId: 'attacker_uid', updatedAt: request.time }`.

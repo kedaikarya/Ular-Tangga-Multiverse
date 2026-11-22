@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, signInWithGoogle, signOutFirebase } from './firebase';
+import { auth, ensureAnonymousAuth, signInWithGoogle, signOutFirebase } from './firebase';
 import {
   addActivityLogInFirestore,
   addChatMessageInFirestore,
@@ -69,6 +69,7 @@ export default function App() {
 
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [anonAuthDisabled, setAnonAuthDisabled] = useState(false);
   const [cloudLeaderboard, setCloudLeaderboard] = useState<Array<{ id: string; name: string; avatar: string; score: number; wins: number }>>([]);
   const [openRooms, setOpenRooms] = useState<Record<string, RoomData>>({});
   const [currentRoomId, setCurrentRoomId] = useState<string | null>(null);
@@ -154,6 +155,9 @@ export default function App() {
   const prevPhaseRef = useRef<string | null>(null);
   const lastSoundboardTsRef = useRef<number>(0);
   const hasSeenInitialMetaRef = useRef<boolean>(false);
+  const triedAutoAnonRef = useRef<boolean>(false);
+  const anonAuthDisabledRef = useRef<boolean>(false);
+  anonAuthDisabledRef.current = anonAuthDisabled;
 
   const cloneRoom = (room: RoomData): RoomData => ({
     ...room,
@@ -178,31 +182,49 @@ export default function App() {
 
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setFirebaseUser(null);
+        setCloudLeaderboard([]);
+        if (!triedAutoAnonRef.current) {
+          triedAutoAnonRef.current = true;
+          try {
+            await ensureAnonymousAuth();
+            return;
+          } catch (err: any) {
+            const code = err?.code || '';
+            if (code === 'auth/operation-not-allowed' || code === 'auth/admin-restricted-operation') {
+              setAnonAuthDisabled(true);
+            }
+            console.warn('Anonymous auth unavailable:', code || err);
+          }
+        }
+        setAuthReady(true);
+        return;
+      }
+
+      setAnonAuthDisabled(false);
       setFirebaseUser(user);
       setAuthReady(true);
-      if (user) {
-        const cur = userProfileRef.current;
-        const resolvedName =
-          cur.name === 'Siswa Pintar' && user.displayName
-            ? user.displayName.slice(0, 40)
-            : cur.name;
-        const updatedProfile: PlayerProfile = {
-          ...cur,
-          id: user.uid,
-          name: resolvedName
-        };
-        if (cur.id !== user.uid || cur.name !== resolvedName) {
-          setUserProfile(updatedProfile);
-        }
-        try {
-          await syncUserProfileToFirestore(user.uid, updatedProfile);
-          const lb = await fetchGlobalLeaderboardFromFirestore();
-          setCloudLeaderboard(lb);
-        } catch (err) {
-          console.error('Auth sync error:', err);
-        }
-      } else {
-        setCloudLeaderboard([]);
+
+      const cur = userProfileRef.current;
+      const resolvedName =
+        cur.name === 'Siswa Pintar' && user.displayName
+          ? user.displayName.slice(0, 40)
+          : cur.name;
+      const updatedProfile: PlayerProfile = {
+        ...cur,
+        id: user.uid,
+        name: resolvedName
+      };
+      if (cur.id !== user.uid || cur.name !== resolvedName) {
+        setUserProfile(updatedProfile);
+      }
+      try {
+        await syncUserProfileToFirestore(user.uid, updatedProfile);
+        const lb = await fetchGlobalLeaderboardFromFirestore();
+        setCloudLeaderboard(lb);
+      } catch (err) {
+        console.error('Auth sync error:', err);
       }
     });
     return () => unsubAuth();
@@ -606,8 +628,9 @@ export default function App() {
       if (currentRoomIdRef.current) {
         handleLeaveRoom();
       }
+      triedAutoAnonRef.current = false;
       await signOutFirebase();
-      showToast('Keluar dari akun Google.', 'info');
+      showToast('Kembali ke sesi tamu otomatis (tanpa login).', 'info');
     } catch (_) {
       showToast('Gagal keluar dari akun Google.', 'error');
     }
@@ -633,7 +656,17 @@ export default function App() {
       questions = [...buildAiQuestionsForTopic(config.grade, config.subject, config.topic), ...questions];
     }
 
-    const fbUser = firebaseUserRef.current;
+    let fbUser = firebaseUserRef.current;
+    if (!fbUser && !anonAuthDisabledRef.current) {
+      try {
+        fbUser = await ensureAnonymousAuth();
+      } catch (err: any) {
+        const errCode = err?.code || '';
+        if (errCode === 'auth/operation-not-allowed' || errCode === 'auth/admin-restricted-operation') {
+          setAnonAuthDisabled(true);
+        }
+      }
+    }
     const hostUid = fbUser ? fbUser.uid : userProfile.id;
 
     const newRoom: RoomData = {
@@ -691,7 +724,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room: newRoom })
       }).catch(() => {});
-      showToast(`Kelas lokal ${code} siap! Login Google agar tersinkron ke semua HP di internet.`, 'info');
+      showToast(`Kelas lokal ${code} siap! Aktifkan Anonymous Auth di Firebase Console untuk sinkron lintas HP.`, 'info');
     }
   };
 
@@ -699,7 +732,17 @@ export default function App() {
     const cleanCode = (code || '').trim().toUpperCase();
     if (!cleanCode) return;
 
-    const fbUser = firebaseUserRef.current;
+    let fbUser = firebaseUserRef.current;
+    if (!fbUser && !anonAuthDisabledRef.current) {
+      try {
+        fbUser = await ensureAnonymousAuth();
+      } catch (err: any) {
+        const errCode = err?.code || '';
+        if (errCode === 'auth/operation-not-allowed' || errCode === 'auth/admin-restricted-operation') {
+          setAnonAuthDisabled(true);
+        }
+      }
+    }
     let room = openRoomsRef.current[cleanCode];
 
     if (fbUser) {
@@ -730,8 +773,8 @@ export default function App() {
     }
 
     if (!room) {
-      if (!fbUser) {
-        showToast(`Kelas "${cleanCode}" tidak ditemukan. Klik "Login Google" jika bergabung dari HP/Vercel!`, 'warning');
+      if (!fbUser && anonAuthDisabledRef.current) {
+        showToast(`Kelas "${cleanCode}" tidak ditemukan. Aktifkan Anonymous Auth di Firebase Console atau Login Google.`, 'warning');
       } else {
         showToast(`Kelas dengan kode "${cleanCode}" tidak ditemukan.`, 'error');
       }
@@ -1581,8 +1624,9 @@ export default function App() {
               setIsTeacherPinModalOpen(true);
             }
           }}
-          authUser={firebaseUser ? { uid: firebaseUser.uid, displayName: firebaseUser.displayName, email: firebaseUser.email } : null}
+          authUser={firebaseUser ? { uid: firebaseUser.uid, displayName: firebaseUser.displayName, email: firebaseUser.email, isAnonymous: firebaseUser.isAnonymous } : null}
           authReady={authReady}
+          anonAuthDisabled={anonAuthDisabled}
           onGoogleSignIn={handleGoogleSignIn}
           onGoogleSignOut={handleGoogleSignOut}
         />

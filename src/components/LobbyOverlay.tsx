@@ -15,8 +15,9 @@ interface LobbyOverlayProps {
   musicStyle: string;
   onCycleMusicStyle: () => void;
   onDeleteRoom: (code: string) => void;
-  authUser: { uid: string; displayName: string | null; email: string | null } | null;
+  authUser: { uid: string; displayName: string | null; email: string | null; isAnonymous?: boolean } | null;
   authReady: boolean;
+  anonAuthDisabled?: boolean;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
 }
@@ -36,6 +37,7 @@ export default function LobbyOverlay({
   onDeleteRoom,
   authUser,
   authReady,
+  anonAuthDisabled,
   onGoogleSignIn,
   onGoogleSignOut
 }: LobbyOverlayProps) {
@@ -114,15 +116,36 @@ export default function LobbyOverlay({
           </button>
           {authReady && (
             authUser ? (
-              <button
-                type="button"
-                onClick={onGoogleSignOut}
-                className="px-2.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold transition flex items-center gap-1.5"
-                title={`Terhubung sebagai ${authUser.email || authUser.displayName || 'Google'}. Klik untuk keluar.`}
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                <span className="max-w-[90px] truncate">{authUser.displayName?.split(' ')[0] || 'Cloud ON'}</span>
-              </button>
+              authUser.isAnonymous ? (
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="px-2.5 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold flex items-center gap-1.5"
+                    title="Sinkronisasi Cloud Real-Time aktif otomatis tanpa perlu login"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    <span>Cloud Aktif</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onGoogleSignIn}
+                    className="px-2.5 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold transition hidden sm:flex items-center gap-1"
+                    title="Opsional: Masuk dengan Google jika ingin riwayat kelas tersimpan permanen lintas HP"
+                  >
+                    <span>🔐</span>
+                    <span>Google</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onGoogleSignOut}
+                  className="px-2.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-extrabold transition flex items-center gap-1.5"
+                  title={`Terhubung sebagai ${authUser.email || authUser.displayName || 'Google'}. Klik untuk keluar ke mode tamu.`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span className="max-w-[90px] truncate">{authUser.displayName?.split(' ')[0] || 'Cloud ON'}</span>
+                </button>
+              )
             ) : (
               <button
                 type="button"
@@ -137,20 +160,20 @@ export default function LobbyOverlay({
         </div>
       </header>
 
-      {authReady && !authUser && (
-        <div className="w-full max-w-6xl mx-auto mt-3 glass-panel-strong rounded-2xl px-4 py-2.5 border border-sky-400/40 flex flex-wrap items-center justify-between gap-2 shadow-xl">
-          <div className="flex items-center gap-2 text-xs text-sky-100">
-            <span>☁️</span>
+      {authReady && !authUser && anonAuthDisabled && (
+        <div className="w-full max-w-6xl mx-auto mt-3 glass-panel-strong rounded-2xl px-4 py-2.5 border border-amber-400/40 flex flex-wrap items-center justify-between gap-2 shadow-xl">
+          <div className="flex items-center gap-2 text-xs text-amber-100">
+            <span>⚙️</span>
             <span>
-              <strong>Mode Sinkronisasi Cloud:</strong> Masuk dengan Google agar kelas & papan 3D tersinkronisasi real-time antar HP.
+              <strong>Aktifkan Anonymous Auth</strong> di Firebase Console (Authentication → Sign-in method → Anonymous → Enable) agar siswa & guru tersinkron tanpa login, atau gunakan Login Google sementara.
             </span>
           </div>
           <button
             type="button"
             onClick={onGoogleSignIn}
-            className="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold transition shrink-0"
+            className="px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-extrabold transition shrink-0"
           >
-            🔐 Masuk dengan Google
+            🔐 Login Google
           </button>
         </div>
       )}
